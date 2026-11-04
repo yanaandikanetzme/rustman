@@ -10,6 +10,7 @@ use crate::{
 };
 
 mod dialogs;
+mod header;
 mod status_bar;
 mod style;
 mod tab_bar;
@@ -21,11 +22,14 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
     // fire alongside any nested control's own press (parent-first), so row
     // clicks still toggle/open and right-clicks on another header still swap
     // the menu over — the nested message is published last and wins.
-    let main: Element<Message> =
+    let shell: Element<Message> =
         mouse_area(row![left_panel(state), main_area(state)].height(Length::Fill))
             .on_press(Message::Sidebar(SidebarMsg::ContextMenuClosed))
             .on_right_press(Message::Sidebar(SidebarMsg::ContextMenuClosed))
             .into();
+    let main: Element<Message> = column![header::view(state), shell]
+        .height(Length::Fill)
+        .into();
     #[cfg(feature = "self-update")]
     let root: Element<Message> = match crate::ui::update_banner::view(state) {
         Some(banner) => column![banner, main].into(),
@@ -307,6 +311,7 @@ fn main_area(state: &AppState) -> Element<'_, Message> {
             iced::widget::rule::horizontal(1.0).style(crate::ui::styles::divider),
             url_bar,
             iced::widget::rule::horizontal(1.0).style(crate::ui::styles::divider),
+            request::draft_banner::view(state).unwrap_or_else(|| Space::new().into()),
             middle,
             iced::widget::rule::horizontal(1.0).style(crate::ui::styles::divider),
             status_bar::status_bar(state),

@@ -5,7 +5,7 @@ use iced::{
 
 use crate::{
     app::AppState,
-    message::{Message, PaletteMsg, RequestMsg},
+    message::{Message, RequestMsg},
     ui::{
         icons,
         theme::{MONO, Palette, TEXT_SM, TEXT_XS},
@@ -144,10 +144,22 @@ pub(super) fn multi_tab_bar(state: &AppState) -> Element<'_, Message> {
             }
         };
 
+        // Unsaved edits, else the persisted local draft (01): red while it
+        // has field conflicts, accent otherwise.
+        let draft = tab
+            .saved_as
+            .as_ref()
+            .and_then(|(_, id)| state.drafts.get(id));
         let modified_dot = if tab.modified && tab.saved_as.is_some() {
             Some(Palette::accent())
         } else if tab.modified {
             Some(Palette::WARNING)
+        } else if let Some(d) = draft {
+            Some(if d.conflicts.is_empty() {
+                Palette::accent()
+            } else {
+                Palette::ERROR
+            })
         } else {
             None
         };
@@ -274,33 +286,7 @@ pub(super) fn multi_tab_bar(state: &AppState) -> Element<'_, Message> {
         .into(),
     );
 
-    let palette_btn = button(
-        row![
-            icons::search().size(12).color(Palette::text_muted()),
-            text("Search").size(TEXT_XS).color(Palette::text_subtle()),
-        ]
-        .spacing(5)
-        .align_y(Alignment::Center),
-    )
-    .on_press(Message::Palette(PaletteMsg::Open))
-    .style(|_t, status| {
-        let hovered = matches!(status, iced::widget::button::Status::Hovered);
-        iced::widget::button::Style {
-            background: if hovered {
-                Some(Background::Color(Palette::hover()))
-            } else {
-                None
-            },
-            text_color: Palette::text_muted(),
-            border: Border {
-                radius: 6.0.into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        }
-    })
-    .padding([5, 8]);
-
+    // Global search moved to the app header (layout/header.rs).
     let bar = container(
         row![
             scrollable(row(tab_items).spacing(2).width(Length::Shrink))
@@ -312,12 +298,6 @@ pub(super) fn multi_tab_bar(state: &AppState) -> Element<'_, Message> {
                 ))
                 .style(crate::ui::theme::tab_scrollbar)
                 .width(Length::Fill),
-            container(palette_btn).padding(iced::Padding {
-                top: 0.0,
-                right: 8.0,
-                bottom: 0.0,
-                left: 4.0
-            }),
         ]
         .align_y(Alignment::Center)
         .padding(iced::Padding {
