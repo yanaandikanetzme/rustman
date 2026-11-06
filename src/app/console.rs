@@ -22,7 +22,10 @@ fn resolved(text: &str, env: Option<&AppEnvironment>) -> String {
 }
 
 fn bounded_body(body: &str, redactor: &secrets::Redactor) -> String {
-    let safe = redactor.redact(&secrets::redact_json_fields(body));
+    // Bodies here are also HTML and plain text: those have no JSON fields to
+    // mask, and still pass through the redactor's known secret values.
+    let fields = secrets::redact_json_fields(body).unwrap_or_else(|_| body.to_owned());
+    let safe = redactor.redact(&fields);
     if safe.len() <= MAX_BODY_BYTES {
         return safe;
     }

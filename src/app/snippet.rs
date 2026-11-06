@@ -166,7 +166,10 @@ fn masked(mut input: GenerateCurlInput) -> GenerateCurlInput {
     fn hide(v: &mut Option<String>) {
         if let Some(s) = v {
             let t = s.trim();
-            if !(t.starts_with("{{") && t.ends_with("}}")) {
+            let reference = t.strip_prefix("{{").and_then(|s| s.strip_suffix("}}"));
+            let single_reference = reference
+                .is_some_and(|key| !key.trim().is_empty() && !key.contains(['{', '}', '\n', '\r']));
+            if !single_reference {
                 *s = MASK.to_owned();
             }
         }
@@ -257,15 +260,27 @@ fn resolved_input(
                 .collect();
             input.body = (!pairs.is_empty()).then(|| pairs.join("&"));
         } else if let Some(body) = &mut input.body {
-            *body = crate::services::secrets::redact_json_fields(body);
+            *body = match crate::services::secrets::redact_json_fields(body) {
+                Ok(safe) => safe,
+                Err(_) if matches!(tab.body_type, BodyType::Json | BodyType::GraphQL) => {
+                    "[Invalid JSON body hidden; Copy preserves the original]".into()
+                }
+                // Unstructured text has no JSON-field masking contract.
+                Err(_) => body.clone(),
+            };
         }
     }
-    input.bearer_token = input.bearer_token.as_deref().map(resolve);
     input.basic_user = input.basic_user.as_deref().map(resolve);
-    input.basic_pass = input.basic_pass.as_deref().map(resolve);
     input.api_key_name = input.api_key_name.as_deref().map(resolve);
+    if redact {
+        // Mask original literals and retain only genuine references. Resolving
+        // first loses provenance: a secret can itself look like {{a_variable}}.
+        return Ok(masked(input));
+    }
+    input.bearer_token = input.bearer_token.as_deref().map(resolve);
+    input.basic_pass = input.basic_pass.as_deref().map(resolve);
     input.api_key_value = input.api_key_value.as_deref().map(resolve);
-    Ok(if redact { masked(input) } else { input })
+    Ok(input)
 }
 
 /// Rebuild the cached panel text for the active tab (no-op while hidden).
@@ -296,6 +311,90 @@ pub(crate) fn refresh(state: &mut AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn security_snippet_auth_braces_do_not_bypass_masking() {
+        use crate::domain::request::AuthType;
+        use base64::Engine as _;
+        let mut tab = RequestTabState::new();
+        tab.set_url("https://synthetic.invalid/login".into());
+        tab.basic_user = "synthetic-user".into();
+        tab.api_key_name = "X-API-Key".into();
+        let literal = "{{left}}synthetic-auth-marker{{right}}";
+        for auth in [AuthType::Bearer, AuthType::Basic, AuthType::ApiKey] {
+            tab.auth_type = auth.clone();
+            tab.bearer_token = literal.into();
+            tab.basic_pass = literal.into();
+            tab.api_key_value = literal.into();
+            let safe = resolved_input(&tab, None, true).unwrap();
+            let basic_encoded = base64::engine::general_purpose::STANDARD
+                .encode(format!("synthetic-user:{literal}"));
+            for lang in Lang::ALL {
+                let shown = crate::services::snippet::generate(lang, &safe);
+                assert!(
+                    !shown.contains("synthetic-auth-marker") && !shown.contains(&basic_encoded),
+                    "auth {auth:?}, language {lang:?} exposed a credential"
+                );
+            }
+            let raw = resolved_input(&tab, None, false).unwrap();
+            assert_eq!(raw.bearer_token.as_deref(), Some(literal));
+            assert_eq!(raw.basic_pass.as_deref(), Some(literal));
+            assert_eq!(raw.api_key_value.as_deref(), Some(literal));
+        }
+    }
+
+    #[test]
+    fn security_snippet_resolved_auth_cannot_impersonate_a_placeholder() {
+        let mut tab = RequestTabState::new();
+        tab.set_url("https://synthetic.invalid/login".into());
+        tab.auth_type = crate::domain::request::AuthType::Bearer;
+        tab.bearer_token = "{{alias}}".into();
+        let env = crate::domain::environment::AppEnvironment {
+            id: "synthetic".into(),
+            name: "Synthetic".into(),
+            is_active: true,
+            variables: [("alias".into(), "{{synthetic-credential-marker}}".into())].into(),
+        };
+        let input = resolved_input(&tab, Some(&env), true).unwrap();
+        let preview = crate::services::snippet::generate(Lang::Curl, &input);
+        assert!(
+            !preview.contains("synthetic-credential-marker"),
+            "resolved credential was mistaken for an unresolved placeholder"
+        );
+        assert!(
+            code(&tab, Lang::Curl, Some(&env))
+                .unwrap()
+                .contains("synthetic-credential-marker")
+        );
+        assert_eq!(tab.bearer_token, "{{alias}}");
+    }
+
+    #[test]
+    fn security_snippet_incomplete_json_hides_body_but_copy_preserves_it() {
+        let mut tab = RequestTabState::new();
+        tab.set_url("https://synthetic.invalid/login".into());
+        tab.body_type = BodyType::Json;
+        for body in [
+            r#"{"password":"synthetic-json-marker","#,
+            r#"{"outer":{"access_token":"synthetic-json-marker"}} trailing"#,
+        ] {
+            tab.reset_body_editor(body);
+            let input = resolved_input(&tab, None, true).unwrap();
+            for lang in Lang::ALL {
+                let shown = crate::services::snippet::generate(lang, &input);
+                assert!(
+                    !shown.contains("synthetic-json-marker"),
+                    "invalid JSON leaked in {lang:?}"
+                );
+            }
+            assert!(
+                code(&tab, Lang::Curl, None)
+                    .unwrap()
+                    .contains("synthetic-json-marker")
+            );
+            assert_eq!(tab.body_editor.content(), body);
+        }
+    }
 
     #[test]
     fn security_snippet_form_password_is_masked_but_explicit_copy_preserves_it() {

@@ -13,6 +13,8 @@ use crate::jobs::JobManager;
 
 #[derive(Debug, Default)]
 pub struct WsState {
+    /// Fresh identity per connection attempt; never persisted.
+    pub connection_id: Option<uuid::Uuid>,
     pub url: String,
     pub connected: bool,
     pub connecting: bool,
@@ -810,14 +812,15 @@ impl RequestTabState {
         })
     }
 
-    /// Typed text in the field is a credential: a sensitive header's value,
+    /// Typed text in the field is a credential: the value of a header or
+    /// param whose key is sensitive (or a variable, which could name one),
     /// or a secret Auth field (the password unless its eye is open).
     pub fn field_secret(&self, row: usize, field: SuggestField) -> bool {
+        let secret_key =
+            |key: &str| crate::services::variables::sensitive(key) || key.contains("{{");
         match field {
-            SuggestField::Value => self
-                .headers
-                .get(row)
-                .is_some_and(|h| crate::services::variables::sensitive(&h.key)),
+            SuggestField::Value => self.headers.get(row).is_some_and(|h| secret_key(&h.key)),
+            SuggestField::ParamValue => self.params.get(row).is_some_and(|p| secret_key(&p.key)),
             SuggestField::Auth(AuthField::BasicPass) => !self.show_basic_pass,
             SuggestField::Auth(field) => field.secret(),
             _ => false,
@@ -825,14 +828,15 @@ impl RequestTabState {
     }
 
     /// Whether the field is drawn as its variable-colouring editor rather
-    /// than a plain input. A secret field becomes one only once it holds a
-    /// variable: the name is then all that is on screen.
+    /// than a plain input. A secret field becomes one only while it is a
+    /// single `{{reference}}` (or one being typed): the name is then all
+    /// that is on screen. Literal text around a reference stays masked.
     pub fn shows_editor(&self, row: usize, field: SuggestField) -> bool {
         let Some(text) = self.field_text(row, field) else {
             return false;
         };
         self.field_editors.contains_key(&(row, field))
-            && (!self.field_secret(row, field) || text.contains("{{"))
+            && (!self.field_secret(row, field) || crate::services::variables::template_input(text))
     }
 
     /// Keep every field's editor holding the field's text. An editor is only

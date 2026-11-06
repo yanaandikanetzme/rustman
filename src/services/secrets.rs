@@ -96,7 +96,9 @@ pub fn display_url(url: &str) -> String {
 
 /// Known credential-named JSON fields in automatically generated previews.
 /// Not a universal secret detector; opaque/non-JSON bodies need separate policy.
-pub fn redact_json_fields(body: &str) -> String {
+/// A caller must explicitly decide how to present invalid JSON; never silently
+/// return an unredacted body when parsing fails.
+pub fn redact_json_fields(body: &str) -> Result<String, serde_json::Error> {
     fn walk(value: &mut serde_json::Value) {
         match value {
             serde_json::Value::Object(fields) => {
@@ -116,13 +118,9 @@ pub fn redact_json_fields(body: &str) -> String {
             _ => {}
         }
     }
-    match serde_json::from_str::<serde_json::Value>(body) {
-        Ok(mut value) => {
-            walk(&mut value);
-            value.to_string()
-        }
-        Err(_) => body.to_owned(),
-    }
+    let mut value = serde_json::from_str::<serde_json::Value>(body)?;
+    walk(&mut value);
+    Ok(value.to_string())
 }
 /// Sharing guard for known structured credential fields. This intentionally
 /// rejects rather than mutating local requests. It is not a universal DLP scanner.

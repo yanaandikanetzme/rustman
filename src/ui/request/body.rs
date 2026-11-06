@@ -93,7 +93,8 @@ fn preview_actions<'a>(
 ) -> Element<'a, Message> {
     let is_preview = field.field_type == FormFieldType::Text
         && !crate::ui::request::cell::is_inline(&field.value);
-    if !is_preview {
+    if !is_preview || crate::services::variables::sensitive(&field.key) || field.key.contains("{{")
+    {
         return Space::new().width(0).into();
     }
     let expanded = tab.form_viewers.contains_key(&field.id);
@@ -133,6 +134,9 @@ fn form_value_viewer<'a>(
     tab: &'a RequestTabState,
     field: &'a FormField,
 ) -> Option<Element<'a, Message>> {
+    if crate::services::variables::sensitive(&field.key) || field.key.contains("{{") {
+        return None;
+    }
     let viewer = tab.form_viewers.get(&field.id)?;
     let count = viewer.page_count();
     let page = viewer.page().min(count - 1);
@@ -464,6 +468,10 @@ fn form_view<'a>(
             })
             .padding([4, 10])
             .into()
+        } else if crate::services::variables::sensitive(&field.key) || field.key.contains("{{") {
+            crate::ui::request::cell::secret_cell(&field.value, move |s| {
+                Message::Request(RequestMsg::FormFieldValueChanged(i, s))
+            })
         } else {
             crate::ui::request::cell::text_cell(
                 "Value",

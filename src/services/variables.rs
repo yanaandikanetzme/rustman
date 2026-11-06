@@ -4,6 +4,26 @@ use std::ops::Range;
 
 pub const MASK: &str = "••••••";
 
+/// Exactly one reference, with no literal suffix/prefix or nested braces.
+pub fn reference_key(value: &str) -> Option<&str> {
+    let key = value.trim().strip_prefix("{{")?.strip_suffix("}}")?.trim();
+    (!key.is_empty() && !key.contains(['{', '}', '\n', '\r'])).then_some(key)
+}
+
+/// Template source stays legible while a single reference is being typed.
+pub fn template_input(value: &str) -> bool {
+    if value.len() > crate::consts::INLINE_LIMIT {
+        return false;
+    }
+    if reference_key(value).is_some() {
+        return true;
+    }
+    value
+        .trim_start()
+        .strip_prefix("{{")
+        .is_some_and(|key| !key.contains(['{', '}', '\n', '\r']))
+}
+
 pub fn sensitive(key: &str) -> bool {
     let key = key.to_ascii_lowercase().replace('-', "_");
     [

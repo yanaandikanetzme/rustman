@@ -433,17 +433,21 @@ pub enum ResponseTab {
 pub enum WsMsg {
     TextFrame {
         tab_id: String,
+        connection_id: uuid::Uuid,
         text: String,
     },
     Disconnected {
         tab_id: String,
+        connection_id: uuid::Uuid,
     },
     Error {
         tab_id: String,
+        connection_id: uuid::Uuid,
         error: String,
     },
     Handshake {
         tab_id: String,
+        connection_id: uuid::Uuid,
         sender: mpsc::Sender<String>,
     },
 }

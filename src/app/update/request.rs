@@ -719,12 +719,15 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
         }
         RequestMsg::WsMessageChanged(v) => tab.ws.draft = v,
         RequestMsg::WsConnect => {
+            tab.ws.connection_id = Some(uuid::Uuid::new_v4());
+            tab.ws.outgoing_tx = None;
             tab.ws.url = tab.url.clone();
             tab.ws.connecting = true;
             tab.ws.connected = false;
             tab.ws.clear_messages();
         }
         RequestMsg::WsDisconnect => {
+            tab.ws.connection_id = None;
             tab.ws.outgoing_tx = None;
             tab.ws.connected = false;
             tab.ws.connecting = false;
@@ -2491,6 +2494,35 @@ mod header_suggest_tests {
             card.mask_all && card.pinned,
             "the value waits behind the eye"
         );
+
+        // Literal text around a reference is still a credential: masked.
+        let _ = handle(
+            &mut state,
+            RequestMsg::BearerTokenChanged("{{id}}synthetic-secret".into()),
+        );
+        state.tabs.active_tab_mut().sync_field_editors();
+        assert!(!state.tabs.active_tab().shows_editor(0, bearer));
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn values_under_sensitive_or_variable_keys_are_secret() {
+        let (mut state, dir) = env_state("secret-keys");
+        let kv = |key: &str| crate::domain::request::KeyValue {
+            key: key.into(),
+            value: "abc".into(),
+            ..crate::domain::request::KeyValue::new_empty()
+        };
+        let tab = state.tabs.active_tab_mut();
+        tab.headers = vec![kv("Authorization"), kv("{{name}}"), kv("Accept")];
+        tab.params = vec![kv("api_key"), kv("page")];
+        let tab = state.tabs.active_tab();
+        assert!(tab.field_secret(0, SuggestField::Value));
+        assert!(tab.field_secret(1, SuggestField::Value));
+        assert!(!tab.field_secret(2, SuggestField::Value));
+        assert!(tab.field_secret(0, SuggestField::ParamValue));
+        assert!(!tab.field_secret(1, SuggestField::ParamValue));
         drop(state);
         let _ = std::fs::remove_dir_all(dir);
     }

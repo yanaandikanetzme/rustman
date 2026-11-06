@@ -61,7 +61,7 @@ pub fn wrap<'a>(
     let tip: Element<'a, Message> = if !open && let Some(key) = &tab.url_hover {
         let value = env.and_then(|env| env.variables.get(key));
         let shown = value
-            .map(|v| variables::preview(key, v))
+            .map(|_| variables::MASK.to_owned())
             .unwrap_or_else(|| "Unresolved variable · Click to save".into());
         container(
             column![
@@ -115,7 +115,7 @@ pub fn wrap<'a>(
                 .min(keys.len().saturating_sub(1));
         let value = env
             .and_then(|e| e.variables.get(key))
-            .map(|v| variables::preview(key, v))
+            .map(|_| variables::MASK.to_owned())
             .unwrap_or_default();
         rows = rows.push(
             button(

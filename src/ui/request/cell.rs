@@ -201,7 +201,7 @@ pub fn secret_cell<'a>(
 ) -> Element<'a, Message> {
     if is_inline(value) {
         text_input("Value", value)
-            .secure(true)
+            .secure(crate::services::variables::reference_key(value).is_none())
             .on_input(on_input)
             .size(12)
             .padding([5, 7])

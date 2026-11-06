@@ -33,11 +33,12 @@ pub(crate) fn subscription(state: &AppState) -> Subscription<Message> {
         .tabs
         .tabs
         .iter()
-        .filter(|t| t.ws.connecting || t.ws.connected)
+        .filter(|t| t.ws.connection_id.is_some() && (t.ws.connecting || t.ws.connected))
         .map(|t| {
             Subscription::run_with(
                 WsConn {
                     tab_id: t.id.clone(),
+                    connection_id: t.ws.connection_id.unwrap(),
                     url: t.ws.url.clone(),
                 },
                 ws_stream,
@@ -222,12 +223,14 @@ fn example_delete_keys(
 #[derive(Hash)]
 struct WsConn {
     tab_id: String,
+    connection_id: uuid::Uuid,
     url: String,
 }
 
 fn ws_stream(conn: &WsConn) -> impl iced::futures::Stream<Item = Message> + use<> {
     let url = conn.url.clone();
     let tab_id = conn.tab_id.clone();
+    let connection_id = conn.connection_id;
     iced::stream::channel(
         4,
         move |mut output: iced::futures::channel::mpsc::Sender<Message>| async move {
@@ -238,6 +241,7 @@ fn ws_stream(conn: &WsConn) -> impl iced::futures::Stream<Item = Message> + use<
                     let _ = output
                         .send(Message::WebSocket(WsMsg::Handshake {
                             tab_id: tab_id.clone(),
+                            connection_id,
                             sender: out_tx,
                         }))
                         .await;
@@ -252,10 +256,10 @@ fn ws_stream(conn: &WsConn) -> impl iced::futures::Stream<Item = Message> + use<
                             event = rx.recv() => {
                                 match event {
                                     Some(WsEvent::Text(t)) => {
-                                        let _ = output.send(Message::WebSocket(WsMsg::TextFrame { tab_id: tab_id.clone(), text: t })).await;
+                                        let _ = output.send(Message::WebSocket(WsMsg::TextFrame { tab_id: tab_id.clone(), connection_id, text: t })).await;
                                     }
                                     Some(WsEvent::Disconnected) | None => {
-                                        let _ = output.send(Message::WebSocket(WsMsg::Disconnected { tab_id: tab_id.clone() })).await;
+                                        let _ = output.send(Message::WebSocket(WsMsg::Disconnected { tab_id: tab_id.clone(), connection_id })).await;
                                         break;
                                     }
                                     _ => {}
@@ -268,6 +272,7 @@ fn ws_stream(conn: &WsConn) -> impl iced::futures::Stream<Item = Message> + use<
                     let _ = output
                         .send(Message::WebSocket(WsMsg::Error {
                             tab_id: tab_id.clone(),
+                            connection_id,
                             error: e,
                         }))
                         .await;
