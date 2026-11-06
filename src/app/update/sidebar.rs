@@ -167,10 +167,6 @@ pub(super) fn handle(state: &mut AppState, msg: SidebarMsg) -> Task<Message> {
                 return Task::done(Message::Git(crate::message::GitMsg::Refresh));
             }
         }
-        SidebarMsg::CollectionDocsOpened(id) => {
-            state.sidebar.context_menu = None;
-            crate::app::docs::open(state, &id);
-        }
         SidebarMsg::DocsClosed => state.collection_docs = None,
         SidebarMsg::DocsFullToggled(full) => {
             if let Some(docs) = &mut state.collection_docs {

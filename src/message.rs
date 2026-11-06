@@ -46,8 +46,7 @@ pub enum Message {
 pub enum SidebarMsg {
     PanelSelected(SidebarPanel),
     RequestOpened(SavedRequest),
-    /// A collection's documentation page.
-    CollectionDocsOpened(String),
+    /// Leave the collection documentation page.
     DocsClosed,
     /// Into the complete documentation (`true`) or back to the Overview.
     DocsFullToggled(bool),

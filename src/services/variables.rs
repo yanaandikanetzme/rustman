@@ -46,14 +46,6 @@ pub fn sensitive(key: &str) -> bool {
         || matches!(key.as_str(), "sid" | "auth")
 }
 
-pub fn preview(key: &str, value: &str) -> String {
-    if sensitive(key) {
-        MASK.into()
-    } else {
-        crate::services::format::head_capped(value, 512).to_owned()
-    }
-}
-
 /// The unfinished token at the caret, including an existing closing pair
 /// when editing a completed token. Offsets are UTF-8 byte positions like iced.
 pub fn completion(text: &str, caret: usize) -> Option<(Range<usize>, &str)> {
@@ -152,12 +144,7 @@ mod tests {
         assert_eq!(completion("é/{{ba", 7).unwrap().1, "ba");
     }
     #[test]
-    fn preview_masks_secret_keys_and_hover_only_matches_tokens() {
-        assert_eq!(preview("access_token", "private"), MASK);
-        assert_eq!(
-            preview("base_url", "http://localhost:3001"),
-            "http://localhost:3001"
-        );
+    fn hover_only_matches_tokens() {
         assert_eq!(
             variable_at("é/{{base_url}}/x", 7).as_deref(),
             Some("base_url")
