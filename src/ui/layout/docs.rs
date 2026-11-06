@@ -20,6 +20,17 @@ use crate::{
 
 const LANG_MENU: &str = "docs-lang";
 
+/// Postman's link blue.
+fn link() -> iced::Color {
+    crate::ui::components::Tone::Info.color()
+}
+
+// Code colours, Postman's dark theme.
+const KEY: iced::Color = iced::Color::from_rgb(0.94, 0.45, 0.47);
+const STRING: iced::Color = iced::Color::from_rgb(0.47, 0.75, 0.42);
+const NUMBER: iced::Color = iced::Color::from_rgb(0.94, 0.45, 0.47);
+const LITERAL: iced::Color = iced::Color::from_rgb(0.42, 0.62, 0.97);
+
 fn semibold() -> iced::Font {
     iced::Font {
         weight: iced::font::Weight::Semibold,
@@ -69,13 +80,12 @@ pub(super) fn view<'a>(state: &'a AppState, docs: &'a CollectionDocs) -> Element
     if !docs.full {
         return overview(docs, close);
     }
-    let back = button(
+    let view_collection = button(
         row![
-            icons::arrow_left().size(12).color(Palette::text_muted()),
-            text(docs.name.as_str())
-                .size(13)
-                .font(semibold())
-                .color(Palette::text()),
+            icons::collections().size(12).color(Palette::text_muted()),
+            text("View collection")
+                .size(12)
+                .color(Palette::text_muted()),
         ]
         .spacing(6)
         .align_y(Alignment::Center),
@@ -84,20 +94,31 @@ pub(super) fn view<'a>(state: &'a AppState, docs: &'a CollectionDocs) -> Element
     .padding([3, 6])
     .style(iced::widget::button::text);
     let top = container(
-        row![
-            tooltip(back, "Back to the overview"),
-            Space::new().width(Length::Fill),
-            text("Language").size(12).color(Palette::text_muted()),
-            mini::anchored_menu(
-                lang_button.into(),
-                open_menu == Some(LANG_MENU),
-                lang_items,
-                200.0
-            ),
-            close,
+        column![
+            row![
+                text(docs.name.as_str())
+                    .size(13)
+                    .font(semibold())
+                    .color(Palette::text()),
+                Space::new().width(Length::Fill),
+                tooltip(view_collection, "Back to the overview"),
+                close,
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+            row![
+                text("Language").size(12).color(Palette::text_muted()),
+                mini::anchored_menu(
+                    lang_button.into(),
+                    open_menu == Some(LANG_MENU),
+                    lang_items,
+                    200.0
+                ),
+            ]
+            .spacing(4)
+            .align_y(Alignment::Center),
         ]
-        .spacing(8)
-        .align_y(Alignment::Center),
+        .spacing(2),
     )
     .padding([8, 16]);
 
@@ -261,14 +282,10 @@ fn overview<'a>(docs: &'a CollectionDocs, close: Element<'a, Message>) -> Elemen
         .push(rule::horizontal(1).style(crate::ui::styles::divider))
         .push(Space::new().height(8))
         .push(
-            button(
-                text("View complete documentation")
-                    .size(13)
-                    .color(Palette::accent()),
-            )
-            .on_press(docs_msg(SidebarMsg::DocsFullToggled(true)))
-            .padding(0)
-            .style(iced::widget::button::text),
+            button(text("View complete documentation").size(13).color(link()))
+                .on_press(docs_msg(SidebarMsg::DocsFullToggled(true)))
+                .padding(0)
+                .style(iced::widget::button::text),
         );
     let body = scrollable(
         container(container(page.padding([28, 24])).max_width(700)).center_x(Length::Fill),
@@ -286,7 +303,7 @@ fn overview<'a>(docs: &'a CollectionDocs, close: Element<'a, Message>) -> Elemen
 }
 
 fn heading<'a>(title: &'a str, note: Option<String>) -> Element<'a, Message> {
-    let mut line = row![text(title).size(15).font(semibold()).color(Palette::text())]
+    let mut line = row![text(title).size(18).font(semibold()).color(Palette::text())]
         .spacing(8)
         .align_y(Alignment::End);
     if let Some(note) = note {
@@ -303,8 +320,8 @@ fn request_block<'a>(
     let r = &req.request;
     let open = button(
         row![
-            text("Open request").size(12).color(Palette::accent()),
-            icons::arrow_right().size(12).color(Palette::accent()),
+            text("Open request").size(13).color(link()),
+            icons::arrow_right().size(13).color(link()),
         ]
         .spacing(4)
         .align_y(Alignment::Center),
@@ -315,11 +332,11 @@ fn request_block<'a>(
     let mut out = column![
         row![
             text(r.method.as_str())
-                .size(16)
+                .size(18)
                 .font(semibold())
                 .color(super::style::method_color(&r.method)),
             text(r.name.as_str())
-                .size(16)
+                .size(18)
                 .font(semibold())
                 .color(Palette::text())
                 .width(Length::Fill),
@@ -333,12 +350,11 @@ fn request_block<'a>(
             } else {
                 r.url.as_str()
             })
-            .size(12)
-            .font(MONO)
+            .size(13)
             .color(Palette::text())
             .wrapping(text::Wrapping::Glyph)
         )
-        .padding([8, 10])
+        .padding([9, 10])
         .width(Length::Fill)
         .style(|_| container::Style {
             background: Some(Background::Color(Palette::surface_high())),
@@ -560,18 +576,120 @@ fn sub(label: &str) -> Element<'_, Message> {
         .into()
 }
 
-/// A read-only code card: language chip and Copy at the top, the first
-/// lines until "View more".
+/// Code split into coloured runs: JSON keys and numbers red, strings green,
+/// `true`/`false`/`null` blue, the rest in the text colour. A light scan that
+/// reads JSON, cURL and the other snippets well enough.
+fn highlight(code: &str) -> Vec<(String, iced::Color)> {
+    let plain = Palette::text();
+    let chars: Vec<char> = code.chars().collect();
+    let mut out: Vec<(String, iced::Color)> = Vec::new();
+    let mut push = |s: String, color: iced::Color| match out.last_mut() {
+        Some((last, c)) if *c == color => last.push_str(&s),
+        _ => out.push((s, color)),
+    };
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '"' || c == '\'' {
+            let start = i;
+            i += 1;
+            while i < chars.len() && chars[i] != c && chars[i] != '\n' {
+                if chars[i] == '\\' {
+                    i += 1;
+                }
+                i += 1;
+            }
+            i = (i + 1).min(chars.len());
+            let s: String = chars[start..i].iter().collect();
+            let next = chars[i..].iter().find(|c| !matches!(c, ' ' | '\t'));
+            let color = if c == '"' && next == Some(&':') {
+                KEY
+            } else {
+                STRING
+            };
+            push(s, color);
+            continue;
+        }
+        let boundary = i == 0 || !(chars[i - 1].is_alphanumeric() || chars[i - 1] == '_');
+        if boundary
+            && (c.is_ascii_digit()
+                || (c == '-' && chars.get(i + 1).is_some_and(char::is_ascii_digit)))
+        {
+            let start = i;
+            i += 1;
+            while i < chars.len()
+                && (chars[i].is_ascii_digit() || matches!(chars[i], '.' | 'e' | 'E' | '+' | '-'))
+            {
+                i += 1;
+            }
+            if chars
+                .get(i)
+                .is_none_or(|c| !(c.is_alphanumeric() || *c == '_'))
+            {
+                push(chars[start..i].iter().collect(), NUMBER);
+            } else {
+                push(chars[start..i].iter().collect(), plain);
+            }
+            continue;
+        }
+        if boundary && c.is_alphabetic() {
+            let start = i;
+            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                i += 1;
+            }
+            let word: String = chars[start..i].iter().collect();
+            let color = if matches!(word.as_str(), "true" | "false" | "null") {
+                LITERAL
+            } else {
+                plain
+            };
+            push(word, color);
+            continue;
+        }
+        push(c.to_string(), plain);
+        i += 1;
+    }
+    out
+}
+
+fn view_more_pill<'a>(label: &'a str, key: String) -> Element<'a, Message> {
+    button(text(label).size(12).color(Palette::text()))
+        .on_press(docs_msg(SidebarMsg::DocsToggled(key)))
+        .padding([4, 12])
+        .style(|_, status| button::Style {
+            background: Some(Background::Color(
+                if matches!(status, button::Status::Hovered) {
+                    Palette::hover()
+                } else {
+                    Palette::surface_high()
+                },
+            )),
+            border: Border {
+                color: Palette::border(),
+                width: 1.0,
+                radius: 12.0.into(),
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+/// A read-only code card, Postman's: language chip, Wrap and Copy at the
+/// top; a long block shows its first lines fading out under "View More".
 fn code_block<'a>(
     docs: &CollectionDocs,
     key: String,
     label: &'a str,
     content: &str,
 ) -> Element<'a, Message> {
+    use iced::widget::text::Span;
     let expanded = docs.expanded.contains(&key);
-    let total = content.lines().count();
-    let long = total > COLLAPSED_LINES;
-    let shown: String = if long && !expanded {
+    let wrap_key = format!("{key}:nowrap");
+    let wrapped = !docs.expanded.contains(&wrap_key);
+    let long = content.lines().count() > COLLAPSED_LINES;
+    let shown: String = if content.is_empty() {
+        "(empty)".to_owned()
+    } else if long && !expanded {
         content
             .lines()
             .take(COLLAPSED_LINES)
@@ -580,19 +698,84 @@ fn code_block<'a>(
     } else {
         content.to_owned()
     };
+    let spans: Vec<Span<'static, (), iced::Font>> = highlight(&shown)
+        .into_iter()
+        .map(|(s, color)| iced::widget::span(s).color(color).font(MONO))
+        .collect();
+    let code = iced::widget::rich_text(spans)
+        .size(12)
+        .wrapping(if wrapped {
+            text::Wrapping::Glyph
+        } else {
+            text::Wrapping::None
+        });
+    let code: Element<'a, Message> = if wrapped {
+        code.width(Length::Fill).into()
+    } else {
+        scrollable(code)
+            .direction(scrollable::Direction::Horizontal(
+                scrollable::Scrollbar::new().width(4).scroller_width(4),
+            ))
+            .style(crate::ui::theme::thin_scrollbar)
+            .into()
+    };
+    let code: Element<'a, Message> = if long && !expanded {
+        // Bands of the card's colour, each more opaque: the fade.
+        let bg = Palette::background();
+        let mut fade = column![].width(Length::Fill);
+        for alpha in [0.15, 0.35, 0.55, 0.75, 0.9] {
+            fade = fade.push(container(Space::new()).width(Length::Fill).height(8).style(
+                move |_| container::Style {
+                    background: Some(Background::Color(iced::Color { a: alpha, ..bg })),
+                    ..Default::default()
+                },
+            ));
+        }
+        let overlay = iced::widget::stack![
+            fade,
+            container(view_more_pill("View More", key.clone()))
+                .center_x(Length::Fill)
+                .padding(iced::padding::top(14)),
+        ];
+        iced::widget::stack![
+            code,
+            container(overlay)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_y(iced::alignment::Vertical::Bottom),
+        ]
+        .into()
+    } else {
+        code
+    };
     let mut card = column![
         row![
-            container(text(label).size(11).color(Palette::text_muted()))
-                .padding([2, 6])
-                .style(|_| container::Style {
-                    background: Some(Background::Color(Palette::surface_high())),
-                    border: Border {
-                        radius: 4.0.into(),
-                        ..Default::default()
-                    },
+            container(
+                text(label)
+                    .size(11)
+                    .font(UI_FONT_MEDIUM)
+                    .color(Palette::text())
+            )
+            .padding([3, 7])
+            .style(|_| container::Style {
+                background: Some(Background::Color(Palette::surface_high())),
+                border: Border {
+                    radius: 4.0.into(),
                     ..Default::default()
-                }),
+                },
+                ..Default::default()
+            }),
             Space::new().width(Length::Fill),
+            mini::icon_button(
+                icons::wrap_text(),
+                if wrapped {
+                    "Don't wrap lines"
+                } else {
+                    "Wrap lines"
+                },
+                Some(docs_msg(SidebarMsg::DocsToggled(wrap_key))),
+                wrapped,
+            ),
             mini::icon_button(
                 icons::copy(),
                 "Copy",
@@ -600,42 +783,16 @@ fn code_block<'a>(
                 false,
             ),
         ]
+        .spacing(2)
         .align_y(Alignment::Center),
-        text(if content.is_empty() {
-            "(empty)".to_owned()
-        } else {
-            shown
-        })
-        .size(12)
-        .font(MONO)
-        .color(Palette::text())
-        .wrapping(text::Wrapping::Glyph),
+        code,
     ]
-    .spacing(8);
-    if long {
-        card = card.push(
-            container(
-                button(
-                    text(if expanded { "View less" } else { "View more" })
-                        .size(12)
-                        .color(Palette::text()),
-                )
-                .on_press(docs_msg(SidebarMsg::DocsToggled(key)))
-                .padding([3, 10])
-                .style(|_, _| button::Style {
-                    background: Some(Background::Color(Palette::surface_high())),
-                    border: Border {
-                        radius: 10.0.into(),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                }),
-            )
-            .center_x(Length::Fill),
-        );
+    .spacing(10);
+    if long && expanded {
+        card = card.push(container(view_more_pill("View Less", key)).center_x(Length::Fill));
     }
     container(card)
-        .padding(10)
+        .padding([10, 12])
         .width(Length::Fill)
         .style(|_| container::Style {
             background: Some(Background::Color(Palette::background())),
@@ -650,8 +807,9 @@ fn code_block<'a>(
 }
 
 #[cfg(test)]
+
 mod tests {
-    use super::created_label;
+    use super::*;
 
     #[test]
     fn created_dates_read_the_same_from_seconds_and_milliseconds() {
@@ -659,5 +817,20 @@ mod tests {
         let seconds = created_label(1_762_400_000).unwrap();
         assert_eq!(created_label(1_762_400_000_000), Some(seconds.clone()));
         assert!(seconds.contains("2025"), "{seconds}");
+    }
+
+    #[test]
+    fn code_colours_keys_strings_numbers_and_literals() {
+        let runs = highlight("{\"id\": \"a\", \"n\": -1.5, \"ok\": true, \"x\": {{v}}}");
+        let colour_of = |s: &str| runs.iter().find(|(r, _)| r == s).map(|(_, c)| *c);
+        assert_eq!(colour_of("\"id\""), Some(KEY));
+        assert_eq!(colour_of("\"a\""), Some(STRING));
+        assert_eq!(colour_of("-1.5"), Some(NUMBER));
+        assert_eq!(colour_of("true"), Some(LITERAL));
+        let text: String = runs.iter().map(|(r, _)| r.as_str()).collect();
+        assert!(text.ends_with("{{v}}}"), "nothing is lost: {text}");
+        // cURL: quoted arguments are strings, words stay plain.
+        let runs = highlight("curl --header 'X: 1'");
+        assert!(runs.iter().any(|(r, c)| r == "'X: 1'" && *c == STRING));
     }
 }

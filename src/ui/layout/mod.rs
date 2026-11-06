@@ -262,7 +262,13 @@ fn main_area(state: &AppState) -> Element<'_, Message> {
         return crate::ui::environment_workspace::view(state, env);
     }
     if let Some(docs) = &state.collection_docs {
-        return column![tab_bar::multi_tab_bar(state), docs::view(state, docs)]
+        return column![
+            tab_bar::multi_tab_bar(state),
+            container(docs::view(state, docs))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(crate::ui::styles::content_surface)
+        ]
             .height(Length::Fill)
             .width(Length::Fill)
             .into();
