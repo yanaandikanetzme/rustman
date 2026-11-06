@@ -7,6 +7,7 @@ pub mod github;
 pub mod http;
 pub mod import;
 pub mod keychain;
+pub mod pm_script;
 pub mod preview_file;
 pub mod repo_import;
 pub mod repo_layout;

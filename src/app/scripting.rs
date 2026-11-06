@@ -124,6 +124,10 @@ pub(crate) fn apply_effects(state: &mut AppState, effects: Vec<Effect>) -> Appli
                 if let Some(env) = state.environments.iter_mut().find(|e| e.is_active) {
                     env.variables.insert(name, value);
                     env_changed = true;
+                } else {
+                    logs.push(format!(
+                        "\"{name}\" was not saved: no environment is active"
+                    ));
                 }
             }
         }
@@ -175,9 +179,16 @@ pub(crate) fn run_and_apply(
             redactor.add(value);
         }
     }
-    match rustman_engine::run(script_text, host_input) {
-        Ok(outcome) => {
-            let mut applied = apply_effects(state, outcome.effects);
+    let outcome = if crate::services::pm_script::is_postman_script(script_text) {
+        crate::services::pm_script::run(script_text, host_input)
+    } else {
+        rustman_engine::run(script_text, host_input)
+            .map(|outcome| outcome.effects)
+            .map_err(|err| err.to_string())
+    };
+    match outcome {
+        Ok(effects) => {
+            let mut applied = apply_effects(state, effects);
             for log in &mut applied.logs {
                 *log = redactor.redact(log);
             }
@@ -186,7 +197,7 @@ pub(crate) fn run_and_apply(
             }
             Ok(applied)
         }
-        Err(err) => Err(redactor.redact(&err.to_string())),
+        Err(err) => Err(redactor.redact(&err)),
     }
 }
 
@@ -291,6 +302,40 @@ mod tests {
             state.tabs.active_tab().cookie_string,
             format!("session={secret}")
         );
+        drop(state);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_postman_script_writes_the_active_environment_and_says_when_it_cannot() {
+        let dir = std::env::temp_dir().join(format!("rustman-pm-{}", uuid::Uuid::new_v4()));
+        let (mut state, _) = crate::app::boot::init_at(dir.clone());
+        state
+            .environments
+            .iter_mut()
+            .for_each(|e| e.is_active = false);
+        let script = "pm.environment.set(\"sig\", JSON.parse(responseBody).signature);";
+        let response = HttpResponse {
+            status: 200,
+            body: "{\"signature\":\"abc\"}".into(),
+            ..Default::default()
+        };
+
+        let input = test_host_input(state.tabs.active_tab(), None, &response);
+        let applied = run_and_apply(&mut state, script, input).unwrap();
+        assert!(applied.logs[0].contains("no environment is active"));
+
+        state.environments.push(env(&[]));
+        let input = test_host_input(state.tabs.active_tab(), state.active_env(), &response);
+        let applied = run_and_apply(&mut state, script, input).unwrap();
+        assert!(applied.logs.is_empty());
+        assert_eq!(state.active_env().unwrap().variables["sig"], "abc");
+
+        // The Rustman language still goes to its own engine.
+        let input = test_host_input(state.tabs.active_tab(), state.active_env(), &response);
+        let applied =
+            run_and_apply(&mut state, "test(\"ok\", response.status == 200)", input).unwrap();
+        assert!(applied.test_results[0].passed);
         drop(state);
         std::fs::remove_dir_all(dir).unwrap();
     }
