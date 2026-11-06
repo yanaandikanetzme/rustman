@@ -104,8 +104,30 @@ pub(crate) fn update(state: &mut AppState, message: Message) -> Task<Message> {
                 | Message::Request(crate::message::RequestMsg::TabDragOver(_))
                 | Message::Palette(crate::message::PaletteMsg::Frame(_))
         );
+    let edited = match &message {
+        Message::Request(msg) => request::edited_field(msg),
+        _ => None,
+    };
+    let had_editor = edited.map(|(row, field)| state.tabs.active_tab().shows_editor(row, field));
     let task = dispatch(state, message);
+    let mut task = task;
+    if !state.tabs.tabs.is_empty() {
+        state.tabs.active_tab_mut().sync_field_editors();
+        // A secret field swaps its masked input for its editor when it gains
+        // a variable (and back): keep the caret in it across the swap.
+        if let (Some((row, field)), Some(before)) = (edited, had_editor)
+            && before != state.tabs.active_tab().shows_editor(row, field)
+        {
+            task = Task::batch([
+                task,
+                iced::widget::operation::focus(crate::ui::request::cell::field_widget_id(
+                    row, field,
+                )),
+            ]);
+        }
+    }
     if refresh_snippet {
+
         crate::app::snippet::refresh(state);
     }
     if prune_examples {

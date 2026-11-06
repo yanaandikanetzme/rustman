@@ -215,12 +215,48 @@ pub struct BodyCompletion {
 
 /// Which cell of the Headers or Params table an autocomplete list or a
 /// variable card belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SuggestField {
     Key,
     Value,
     ParamKey,
     ParamValue,
+    /// An Auth field; its row is always 0.
+    Auth(AuthField),
+}
+
+/// An Auth field that can hold `{{variables}}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AuthField {
+    Bearer,
+    BasicUser,
+    BasicPass,
+    ApiKeyName,
+    ApiKeyValue,
+    Cookie,
+    JwtSubject,
+    JwtSecret,
+}
+
+impl AuthField {
+    pub const ALL: [Self; 8] = [
+        Self::Bearer,
+        Self::BasicUser,
+        Self::BasicPass,
+        Self::ApiKeyName,
+        Self::ApiKeyValue,
+        Self::Cookie,
+        Self::JwtSubject,
+        Self::JwtSecret,
+    ];
+
+    /// Typed text in it is a credential and shows masked.
+    pub fn secret(self) -> bool {
+        matches!(
+            self,
+            Self::Bearer | Self::BasicPass | Self::ApiKeyValue | Self::Cookie | Self::JwtSecret
+        )
+    }
 }
 
 /// The Headers cell whose autocomplete list is open, and its highlighted row.
@@ -267,6 +303,10 @@ pub struct RequestTabState {
     /// canonical value — every writer goes through `set_url` so the two can
     /// never disagree.
     pub url_editor: text_editor::Content,
+    /// One-line editors of the Headers and Params cells and the Auth
+    /// fields, which colour `{{variables}}` like the URL bar. Kept in step
+    /// by [`Self::sync_field_editors`].
+    pub field_editors: std::collections::HashMap<(usize, SuggestField), text_editor::Content>,
     pub url_hover: Option<String>,
     pub url_variable_draft: Option<UrlVariableDraft>,
     pub url_completion_open: bool,
@@ -443,6 +483,7 @@ impl RequestTabState {
             method: HttpMethod::Get,
             url: String::new(),
             url_editor: text_editor::Content::new(),
+            field_editors: std::collections::HashMap::new(),
             url_hover: None,
             url_variable_draft: None,
             url_completion_open: false,
@@ -718,14 +759,9 @@ impl RequestTabState {
         let Some(s) = self.header_suggest else {
             return Vec::new();
         };
-        if matches!(s.field, SuggestField::ParamKey | SuggestField::ParamValue) {
-            let Some(p) = self.params.get(s.row) else {
+        if !matches!(s.field, SuggestField::Key | SuggestField::Value) {
+            let Some(text) = self.field_text(s.row, s.field) else {
                 return Vec::new();
-            };
-            let text = if s.field == SuggestField::ParamKey {
-                &p.key
-            } else {
-                &p.value
             };
             return hs::variables(text, env).unwrap_or_default();
         }
@@ -752,6 +788,87 @@ impl RequestTabState {
             }
             _ => hs::for_value(&h.key, &h.value, env),
         }
+    }
+
+    /// The text of a Headers or Params cell, or of an Auth field.
+    pub fn field_text(&self, row: usize, field: SuggestField) -> Option<&str> {
+        Some(match field {
+            SuggestField::Key => &self.headers.get(row)?.key,
+            SuggestField::Value => &self.headers.get(row)?.value,
+            SuggestField::ParamKey => &self.params.get(row)?.key,
+            SuggestField::ParamValue => &self.params.get(row)?.value,
+            SuggestField::Auth(field) => match field {
+                AuthField::Bearer => &self.bearer_token,
+                AuthField::BasicUser => &self.basic_user,
+                AuthField::BasicPass => &self.basic_pass,
+                AuthField::ApiKeyName => &self.api_key_name,
+                AuthField::ApiKeyValue => &self.api_key_value,
+                AuthField::Cookie => &self.cookie_string,
+                AuthField::JwtSubject => &self.jwt_subject,
+                AuthField::JwtSecret => &self.jwt_secret,
+            },
+        })
+    }
+
+    /// Typed text in the field is a credential: a sensitive header's value,
+    /// or a secret Auth field (the password unless its eye is open).
+    pub fn field_secret(&self, row: usize, field: SuggestField) -> bool {
+        match field {
+            SuggestField::Value => self
+                .headers
+                .get(row)
+                .is_some_and(|h| crate::services::variables::sensitive(&h.key)),
+            SuggestField::Auth(AuthField::BasicPass) => !self.show_basic_pass,
+            SuggestField::Auth(field) => field.secret(),
+            _ => false,
+        }
+    }
+
+    /// Whether the field is drawn as its variable-colouring editor rather
+    /// than a plain input. A secret field becomes one only once it holds a
+    /// variable: the name is then all that is on screen.
+    pub fn shows_editor(&self, row: usize, field: SuggestField) -> bool {
+        let Some(text) = self.field_text(row, field) else {
+            return false;
+        };
+        self.field_editors.contains_key(&(row, field))
+            && (!self.field_secret(row, field) || text.contains("{{"))
+    }
+
+    /// Keep every field's editor holding the field's text. An editor is only
+    /// rebuilt when its text changed elsewhere (a pick, undo, a sync, a row
+    /// removed above it), so the caret survives typing.
+    pub fn sync_field_editors(&mut self) {
+        let mut ids: Vec<(usize, SuggestField)> = Vec::new();
+        for row in 0..self.headers.len() {
+            ids.push((row, SuggestField::Key));
+            ids.push((row, SuggestField::Value));
+        }
+        for row in 0..self.params.len() {
+            ids.push((row, SuggestField::ParamKey));
+            ids.push((row, SuggestField::ParamValue));
+        }
+        ids.extend(AuthField::ALL.map(|f| (0, SuggestField::Auth(f))));
+        let mut old = std::mem::take(&mut self.field_editors);
+        let mut kept = std::collections::HashMap::with_capacity(ids.len());
+        for id in ids {
+            let Some(text) = self.field_text(id.0, id.1) else {
+                continue;
+            };
+            if !crate::ui::request::cell::is_inline(text) {
+                continue;
+            }
+            let editor = match old.remove(&id) {
+                Some(editor) if editor.text() == text => editor,
+                _ => {
+                    let mut editor = text_editor::Content::with_text(text);
+                    editor.perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
+                    editor
+                }
+            };
+            kept.insert(id, editor);
+        }
+        self.field_editors = kept;
     }
 
     /// Whether the toolbar offers Preview for the current response.

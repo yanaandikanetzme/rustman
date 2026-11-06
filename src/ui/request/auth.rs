@@ -3,13 +3,13 @@
 
 use iced::{
     Alignment, Element, Length,
-    widget::{Space, button, column, container, pick_list, row, scrollable, text, text_input},
+    widget::{Space, button, column, container, pick_list, row, scrollable, text},
 };
 
 use crate::{
     domain::request::AuthType,
     message::{Message, RequestMsg},
-    state::tabs::RequestTabState,
+    state::tabs::{AuthField, RequestTabState, SuggestField},
     ui::{
         icons::{eye, eye_closed},
         styles,
@@ -83,7 +83,10 @@ fn help(auth: &AuthType) -> &'static str {
     }
 }
 
-pub fn view(tab: &RequestTabState) -> Element<'_, Message> {
+pub fn view<'a>(
+    tab: &'a RequestTabState,
+    env: Option<&'a crate::domain::environment::AppEnvironment>,
+) -> Element<'a, Message> {
     let current = choice(&tab.auth_type);
     let side = column![
         text("Auth type").size(11).color(Palette::text_subtle()),
@@ -113,7 +116,7 @@ pub fn view(tab: &RequestTabState) -> Element<'_, Message> {
             "Bearer Token",
             vec![field_row(
                 "Token",
-                input("Token", &tab.bearer_token, true, |s| {
+                input(tab, env, AuthField::Bearer, "Token", |s| {
                     Message::Request(RequestMsg::BearerTokenChanged(s))
                 }),
             )],
@@ -129,14 +132,14 @@ pub fn view(tab: &RequestTabState) -> Element<'_, Message> {
                 vec![
                     field_row(
                         "Username",
-                        input("Username", &tab.basic_user, false, |s| {
+                        input(tab, env, AuthField::BasicUser, "Username", |s| {
                             Message::Request(RequestMsg::BasicUserChanged(s))
                         }),
                     ),
                     field_row(
                         "Password",
                         row![
-                            input("Password", &tab.basic_pass, !tab.show_basic_pass, |s| {
+                            input(tab, env, AuthField::BasicPass, "Password", |s| {
                                 Message::Request(RequestMsg::BasicPassChanged(s))
                             }),
                             button(eye_icon.size(14).color(Palette::text_muted()))
@@ -158,13 +161,13 @@ pub fn view(tab: &RequestTabState) -> Element<'_, Message> {
             vec![
                 field_row(
                     "Key",
-                    input("Key name", &tab.api_key_name, false, |s| {
+                    input(tab, env, AuthField::ApiKeyName, "Key name", |s| {
                         Message::Request(RequestMsg::ApiKeyNameChanged(s))
                     }),
                 ),
                 field_row(
                     "Value",
-                    input("Value", &tab.api_key_value, true, |s| {
+                    input(tab, env, AuthField::ApiKeyValue, "Value", |s| {
                         Message::Request(RequestMsg::ApiKeyValueChanged(s))
                     }),
                 ),
@@ -187,9 +190,13 @@ pub fn view(tab: &RequestTabState) -> Element<'_, Message> {
             "Cookie",
             vec![field_row(
                 "Cookie string",
-                input("name=value; other=value", &tab.cookie_string, true, |s| {
-                    Message::Request(RequestMsg::CookieStringChanged(s))
-                }),
+                input(
+                    tab,
+                    env,
+                    AuthField::Cookie,
+                    "name=value; other=value",
+                    |s| Message::Request(RequestMsg::CookieStringChanged(s)),
+                ),
             )],
         ),
         AuthType::JwtUser => form(
@@ -197,13 +204,13 @@ pub fn view(tab: &RequestTabState) -> Element<'_, Message> {
             vec![
                 field_row(
                     "Subject (sub)",
-                    input("Subject", &tab.jwt_subject, false, |s| {
+                    input(tab, env, AuthField::JwtSubject, "Subject", |s| {
                         Message::Request(RequestMsg::JwtSubjectChanged(s))
                     }),
                 ),
                 field_row(
                     "Secret",
-                    input("Secret", &tab.jwt_secret, true, |s| {
+                    input(tab, env, AuthField::JwtSecret, "Secret", |s| {
                         Message::Request(RequestMsg::JwtSecretChanged(s))
                     }),
                 ),
@@ -271,11 +278,15 @@ fn field_row<'a>(label: &'static str, field: Element<'a, Message>) -> Element<'a
 }
 
 fn input<'a>(
+    tab: &'a RequestTabState,
+    env: Option<&'a crate::domain::environment::AppEnvironment>,
+    field: AuthField,
     placeholder: &'static str,
-    value: &'a str,
-    secure: bool,
     on_input: impl Fn(String) -> Message + 'a,
 ) -> Element<'a, Message> {
+    let id = SuggestField::Auth(field);
+    let value = tab.field_text(0, id).unwrap_or("");
+    let secure = tab.field_secret(0, id);
     if !super::cell::is_inline(value) {
         let shown = if secure {
             crate::services::variables::MASK
@@ -293,15 +304,27 @@ fn input<'a>(
         .align_y(Alignment::Center)
         .into();
     }
-    text_input(placeholder, value)
-        .on_input(on_input)
-        .secure(secure)
-        .size(12)
-        .font(MONO)
-        .padding([8, 10])
-        .width(Length::Fill)
-        .style(styles::boxed_input)
-        .into()
+    // `{{` lists the variables; a finished one opens its card on hover or
+    // click, with a secret's value behind the eye.
+    let list = tab.header_suggestions(env);
+    let open = tab.header_suggest.filter(|s| s.row == 0 && s.field == id);
+    super::headers::suggest_cell(
+        super::cell::variable_field(
+            tab,
+            0,
+            id,
+            placeholder,
+            super::cell::Frame::Boxed,
+            env,
+            on_input,
+        ),
+        0,
+        id,
+        if open.is_some() { &list[..] } else { &[] },
+        open.map_or(0, |s| s.selected),
+        tab.var_card.as_ref(),
+        env,
+    )
 }
 
 #[cfg(test)]

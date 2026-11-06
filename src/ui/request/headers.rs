@@ -342,14 +342,23 @@ fn header_table<'a>(
     for (i, item) in tab.headers.iter().enumerate() {
         let cell_open =
             |field| open.is_some_and(|s| s.row == i && s.field == field) && !list.is_empty();
-        let key_cell =
-            super::cell::text_cell("Key", &item.key, 12.0, [5, 7], Length::Fill, move |s| {
-                Message::Request(RequestMsg::HeaderKeyChanged(i, s))
-            });
-        let value_cell = value_cell(
+        let key_cell = super::cell::variable_field(
+            tab,
             i,
-            &item.value,
-            crate::services::variables::sensitive(&item.key),
+            SuggestField::Key,
+            "Key",
+            super::cell::Frame::Cell,
+            env,
+            move |s| Message::Request(RequestMsg::HeaderKeyChanged(i, s)),
+        );
+        let value_cell = super::cell::variable_field(
+            tab,
+            i,
+            SuggestField::Value,
+            "Value",
+            super::cell::Frame::Cell,
+            env,
+            move |s| Message::Request(RequestMsg::HeaderValueChanged(i, s)),
         );
         let key_open = cell_open(SuggestField::Key);
         let value_open = cell_open(SuggestField::Value);
@@ -577,17 +586,6 @@ pub(crate) fn suggest_list<'a>(
         ..Default::default()
     })
     .into()
-}
-
-fn value_cell(i: usize, value: &str, sensitive: bool) -> Element<'_, Message> {
-    if sensitive {
-        return super::cell::secret_cell(value, move |s| {
-            Message::Request(RequestMsg::HeaderValueChanged(i, s))
-        });
-    }
-    super::cell::text_cell("Value", value, 12.0, [5, 7], Length::Fill, move |s| {
-        Message::Request(RequestMsg::HeaderValueChanged(i, s))
-    })
 }
 
 #[cfg(test)]

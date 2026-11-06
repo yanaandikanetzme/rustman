@@ -300,7 +300,7 @@ fn main_area(state: &AppState) -> Element<'_, Message> {
             active_env,
             state.sidebar.context_menu.as_deref(),
         ),
-        RequestTab::Auth => request::auth::view(active_tab),
+        RequestTab::Auth => request::auth::view(active_tab, active_env),
         RequestTab::Scripts => request::scripts::view(active_tab),
         // No longer a real tab (timeout moved to global Settings) — only
         // reachable via an old persisted session; fall back to Params.

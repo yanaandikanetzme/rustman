@@ -174,6 +174,12 @@ pub enum RequestMsg {
     /// the handler decides per action (see `handle`), which is what lets
     /// huge pastes route to import without ever entering the widget.
     UrlEdited(iced::widget::text_editor::Action),
+    /// An edit in a Headers/Params cell's or an Auth field's editor.
+    FieldEdited(
+        usize,
+        crate::state::tabs::SuggestField,
+        iced::widget::text_editor::Action,
+    ),
     UrlHovered(Option<iced::Point>),
     UrlCompletionMoved(i32),
     UrlCompletionSelected(Option<String>),

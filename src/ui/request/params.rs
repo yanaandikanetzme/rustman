@@ -95,18 +95,25 @@ fn param_table<'a>(
                 .into(),
             cell(
                 SuggestField::ParamKey,
-                super::cell::text_cell("Key", &item.key, 12.0, [5, 7], Length::Fill, move |s| {
-                    Message::Request(RequestMsg::ParamKeyChanged(i, s))
-                }),
+                super::cell::variable_field(
+                    tab,
+                    i,
+                    SuggestField::ParamKey,
+                    "Key",
+                    super::cell::Frame::Cell,
+                    env,
+                    move |s| Message::Request(RequestMsg::ParamKeyChanged(i, s)),
+                ),
             ),
             cell(
                 SuggestField::ParamValue,
-                super::cell::text_cell(
+                super::cell::variable_field(
+                    tab,
+                    i,
+                    SuggestField::ParamValue,
                     "Value",
-                    &item.value,
-                    12.0,
-                    [5, 7],
-                    Length::Fill,
+                    super::cell::Frame::Cell,
+                    env,
                     move |s| Message::Request(RequestMsg::ParamValueChanged(i, s)),
                 ),
             ),

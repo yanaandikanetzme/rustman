@@ -257,6 +257,29 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
                 }
             }
         }
+        RequestMsg::FieldEdited(row, field, action) => {
+            use iced::widget::text_editor::{Action, Edit};
+            let action = match action {
+                // One line: Enter and Tab never change the text.
+                Action::Edit(Edit::Enter | Edit::Indent | Edit::Unindent) => {
+                    return Task::none();
+                }
+                Action::Edit(Edit::Paste(text)) => Action::Edit(Edit::Paste(Arc::new(
+                    text.replace("\r\n", "").replace(['\r', '\n'], ""),
+                ))),
+                action => action,
+            };
+            let edits = url_action_edits_content(&action);
+            let Some(editor) = tab.field_editors.get_mut(&(row, field)) else {
+                return Task::none();
+            };
+            editor.perform(action);
+            if !edits {
+                return Task::none();
+            }
+            let value = editor.text();
+            return handle(state, field_edit(row, field, value));
+        }
         RequestMsg::MethodChanged(v) => {
             if let Ok(m) = v.parse() {
                 if tab.method != m {
@@ -553,22 +576,47 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
         RequestMsg::BearerTokenChanged(v) => {
             tab.bearer_token = v;
             tab.modified = true;
+            open_suggest(
+                tab,
+                0,
+                crate::state::tabs::SuggestField::Auth(crate::state::tabs::AuthField::Bearer),
+            );
         }
         RequestMsg::BasicUserChanged(v) => {
             tab.basic_user = v;
             tab.modified = true;
+            open_suggest(
+                tab,
+                0,
+                crate::state::tabs::SuggestField::Auth(crate::state::tabs::AuthField::BasicUser),
+            );
         }
         RequestMsg::BasicPassChanged(v) => {
             tab.basic_pass = v;
             tab.modified = true;
+            open_suggest(
+                tab,
+                0,
+                crate::state::tabs::SuggestField::Auth(crate::state::tabs::AuthField::BasicPass),
+            );
         }
         RequestMsg::ApiKeyNameChanged(v) => {
             tab.api_key_name = v;
             tab.modified = true;
+            open_suggest(
+                tab,
+                0,
+                crate::state::tabs::SuggestField::Auth(crate::state::tabs::AuthField::ApiKeyName),
+            );
         }
         RequestMsg::ApiKeyValueChanged(v) => {
             tab.api_key_value = v;
             tab.modified = true;
+            open_suggest(
+                tab,
+                0,
+                crate::state::tabs::SuggestField::Auth(crate::state::tabs::AuthField::ApiKeyValue),
+            );
         }
         RequestMsg::AuthTypeChanged(v) => {
             if let Ok(a) = v.parse() {
@@ -581,14 +629,29 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
         RequestMsg::CookieStringChanged(v) => {
             tab.cookie_string = v;
             tab.modified = true;
+            open_suggest(
+                tab,
+                0,
+                crate::state::tabs::SuggestField::Auth(crate::state::tabs::AuthField::Cookie),
+            );
         }
         RequestMsg::JwtSecretChanged(v) => {
             tab.jwt_secret = v;
             tab.modified = true;
+            open_suggest(
+                tab,
+                0,
+                crate::state::tabs::SuggestField::Auth(crate::state::tabs::AuthField::JwtSecret),
+            );
         }
         RequestMsg::JwtSubjectChanged(v) => {
             tab.jwt_subject = v;
             tab.modified = true;
+            open_suggest(
+                tab,
+                0,
+                crate::state::tabs::SuggestField::Auth(crate::state::tabs::AuthField::JwtSubject),
+            );
         }
         RequestMsg::JwtAlgoChanged(v) => {
             tab.jwt_algo = v;
@@ -1661,13 +1724,7 @@ fn header_cell(
     row: usize,
     field: crate::state::tabs::SuggestField,
 ) -> Option<&str> {
-    use crate::state::tabs::SuggestField;
-    Some(match field {
-        SuggestField::Key => &tab.headers.get(row)?.key,
-        SuggestField::Value => &tab.headers.get(row)?.value,
-        SuggestField::ParamKey => &tab.params.get(row)?.key,
-        SuggestField::ParamValue => &tab.params.get(row)?.value,
-    })
+    tab.field_text(row, field)
 }
 
 /// Open the card of a Headers cell. Does nothing for a cell without variables.
@@ -1688,8 +1745,11 @@ fn open_header_card(
     if names.is_empty() {
         return;
     }
-    let mask_all = field == SuggestField::Value
-        && crate::services::variables::sensitive(&tab.headers[row].key);
+    let mask_all = match field {
+        SuggestField::Value => crate::services::variables::sensitive(&tab.headers[row].key),
+        SuggestField::Auth(field) => field.secret(),
+        _ => false,
+    };
     tab.var_card = Some(VarCard {
         names,
         anchor: VarCardAnchor::Header(row, field),
@@ -1953,6 +2013,54 @@ fn insert_body_variable(tab: &mut RequestTabState, apply: String) -> Task<Messag
     task.map(|m| Message::Request(RequestMsg::BodyEdited(m)))
 }
 
+/// The message that sets a field's text, so every editor of it goes through
+/// the same edit path (undo, drafts, URL params, autocomplete).
+fn field_edit(row: usize, field: crate::state::tabs::SuggestField, value: String) -> RequestMsg {
+    use crate::state::tabs::{AuthField, SuggestField};
+    match field {
+        SuggestField::Key => RequestMsg::HeaderKeyChanged(row, value),
+        SuggestField::Value => RequestMsg::HeaderValueChanged(row, value),
+        SuggestField::ParamKey => RequestMsg::ParamKeyChanged(row, value),
+        SuggestField::ParamValue => RequestMsg::ParamValueChanged(row, value),
+        SuggestField::Auth(field) => match field {
+            AuthField::Bearer => RequestMsg::BearerTokenChanged(value),
+            AuthField::BasicUser => RequestMsg::BasicUserChanged(value),
+            AuthField::BasicPass => RequestMsg::BasicPassChanged(value),
+            AuthField::ApiKeyName => RequestMsg::ApiKeyNameChanged(value),
+            AuthField::ApiKeyValue => RequestMsg::ApiKeyValueChanged(value),
+            AuthField::Cookie => RequestMsg::CookieStringChanged(value),
+            AuthField::JwtSubject => RequestMsg::JwtSubjectChanged(value),
+            AuthField::JwtSecret => RequestMsg::JwtSecretChanged(value),
+        },
+    }
+}
+
+/// The field a message edits, if any: the update loop refocuses it when
+/// the edit swaps its input for its editor (a secret field gaining `{{`).
+pub(super) fn edited_field(msg: &RequestMsg) -> Option<(usize, crate::state::tabs::SuggestField)> {
+    use crate::state::tabs::{AuthField, SuggestField};
+    let auth = |field| Some((0, SuggestField::Auth(field)));
+    match msg {
+        RequestMsg::FieldEdited(row, field, _)
+        | RequestMsg::HeaderSuggestionPicked(row, field, _) => Some((*row, *field)),
+        RequestMsg::HeaderKeyChanged(row, _) => Some((*row, SuggestField::Key)),
+        RequestMsg::HeaderValueChanged(row, _) => Some((*row, SuggestField::Value)),
+        RequestMsg::ParamKeyChanged(row, _) => Some((*row, SuggestField::ParamKey)),
+        RequestMsg::ParamValueChanged(row, _) => Some((*row, SuggestField::ParamValue)),
+        RequestMsg::BearerTokenChanged(_) => auth(AuthField::Bearer),
+        RequestMsg::BasicUserChanged(_) => auth(AuthField::BasicUser),
+        RequestMsg::BasicPassChanged(_) | RequestMsg::ToggleBasicPassVisibility => {
+            auth(AuthField::BasicPass)
+        }
+        RequestMsg::ApiKeyNameChanged(_) => auth(AuthField::ApiKeyName),
+        RequestMsg::ApiKeyValueChanged(_) => auth(AuthField::ApiKeyValue),
+        RequestMsg::CookieStringChanged(_) => auth(AuthField::Cookie),
+        RequestMsg::JwtSubjectChanged(_) => auth(AuthField::JwtSubject),
+        RequestMsg::JwtSecretChanged(_) => auth(AuthField::JwtSecret),
+        _ => None,
+    }
+}
+
 /// Typing in a Headers cell keeps its list open on that cell, back at the
 /// first (best) match since the filter changed.
 fn open_suggest(tab: &mut RequestTabState, row: usize, field: crate::state::tabs::SuggestField) {
@@ -1964,7 +2072,6 @@ fn open_suggest(tab: &mut RequestTabState, row: usize, field: crate::state::tabs
 }
 
 fn handle_header_suggest(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
-    use crate::state::tabs::SuggestField;
     match msg {
         RequestMsg::HeaderSuggestOpened(row, field) => {
             let tab = state.tabs.active_tab_mut();
@@ -2035,12 +2142,7 @@ fn handle_header_suggest(state: &mut AppState, msg: RequestMsg) -> Task<Message>
                 return Task::none();
             }
             // Through the normal edit path so undo and drafts see it.
-            let edit = match field {
-                SuggestField::Key => RequestMsg::HeaderKeyChanged(row, value),
-                SuggestField::Value => RequestMsg::HeaderValueChanged(row, value),
-                SuggestField::ParamKey => RequestMsg::ParamKeyChanged(row, value),
-                SuggestField::ParamValue => RequestMsg::ParamValueChanged(row, value),
-            };
+            let edit = field_edit(row, field, value);
             let task = handle(state, edit);
             state.tabs.active_tab_mut().header_suggest = None;
             return task;
@@ -2301,6 +2403,94 @@ mod header_suggest_tests {
         let card = state.tabs.active_tab().var_card.clone().unwrap();
         assert_eq!(card.names, ["id"]);
         assert!(card.pinned && !card.mask_all);
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn env_state(name: &str) -> (AppState, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("rustman-{name}-{}", uuid::Uuid::new_v4()));
+        let (mut state, _) = crate::app::boot::init_at(dir.clone());
+        state
+            .environments
+            .iter_mut()
+            .for_each(|e| e.is_active = false);
+        state
+            .environments
+            .push(crate::domain::environment::AppEnvironment {
+                id: "e".into(),
+                name: "E".into(),
+                variables: [("id".to_owned(), "42".to_owned())].into(),
+                is_active: true,
+            });
+        (state, dir)
+    }
+
+    #[test]
+    fn a_cell_editor_types_through_the_edit_path_on_one_line() {
+        use iced::widget::text_editor::{Action, Edit};
+        let (mut state, dir) = env_state("fieldedit");
+        let _ = handle(&mut state, RequestMsg::HeaderAdded);
+        state.tabs.active_tab_mut().sync_field_editors();
+        let type_in = |state: &mut AppState, action| {
+            let _ = handle(
+                state,
+                RequestMsg::FieldEdited(0, SuggestField::Value, action),
+            );
+        };
+        type_in(&mut state, Action::Edit(Edit::Insert('a')));
+        type_in(&mut state, Action::Edit(Edit::Enter));
+        type_in(
+            &mut state,
+            Action::Edit(Edit::Paste(std::sync::Arc::new("-{{\n".into()))),
+        );
+        let tab = state.tabs.active_tab();
+        assert_eq!(tab.headers[0].value, "a-{{");
+        assert_eq!(
+            tab.header_suggest.map(|s| s.field),
+            Some(SuggestField::Value),
+            "typing `{{{{` lists the variables"
+        );
+
+        // Text changed elsewhere reaches the editor; equal text keeps it.
+        state.tabs.active_tab_mut().headers[0].value = "{{id}}".into();
+        state.tabs.active_tab_mut().sync_field_editors();
+        let tab = state.tabs.active_tab();
+        assert_eq!(
+            tab.field_editors[&(0, SuggestField::Value)].text(),
+            "{{id}}"
+        );
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_secret_shows_only_once_it_holds_a_variable() {
+        use crate::state::tabs::AuthField;
+        let (mut state, dir) = env_state("secret");
+        let bearer = SuggestField::Auth(AuthField::Bearer);
+        let _ = handle(&mut state, RequestMsg::BearerTokenChanged("abc".into()));
+        state.tabs.active_tab_mut().sync_field_editors();
+        assert!(!state.tabs.active_tab().shows_editor(0, bearer));
+        let _ = handle(&mut state, RequestMsg::BearerTokenChanged("{{".into()));
+        let list = state
+            .tabs
+            .active_tab()
+            .header_suggestions(state.active_env());
+        assert_eq!(list[0].label, "id");
+        let _ = handle(&mut state, RequestMsg::HeaderSuggestAccepted);
+        state.tabs.active_tab_mut().sync_field_editors();
+        let tab = state.tabs.active_tab();
+        assert_eq!(tab.bearer_token, "{{id}}");
+        assert!(tab.shows_editor(0, bearer));
+        assert!(tab.shows_editor(0, SuggestField::Auth(AuthField::BasicUser)));
+
+        let _ = handle(&mut state, RequestMsg::HeaderSuggestOpened(0, bearer));
+        let card = state.tabs.active_tab().var_card.clone().unwrap();
+        assert_eq!(card.names, ["id"]);
+        assert!(
+            card.mask_all && card.pinned,
+            "the value waits behind the eye"
+        );
         drop(state);
         let _ = std::fs::remove_dir_all(dir);
     }
