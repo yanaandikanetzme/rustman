@@ -527,28 +527,21 @@ fn form_view<'a>(
     .into()
 }
 
-/// Postman's variable help around the body editor: a hover card for the
-/// `{{name}}` under the mouse, an outlined mark on every token and the `{{`
-/// autocomplete at the caret. All layers are always present so the editor's
-/// widget state (scroll, focus) survives them coming and going.
+/// Postman's variable help around the body editor: a card for the `{{name}}`
+/// under the mouse, an outlined mark on every token and the `{{` autocomplete
+/// at the caret. All layers are always present so the editor's widget state
+/// (scroll, focus) survives them coming and going.
 fn variable_hover<'a>(
     editor: Element<'a, Message>,
     tab: &'a RequestTabState,
     env: Option<&'a crate::domain::environment::AppEnvironment>,
 ) -> Element<'a, Message> {
     use crate::ui::widgets::popup;
-    use iced::widget::{Stack, pin, stack, tooltip};
+    use iced::widget::{Stack, pin, stack};
 
-    let tip: Element<'a, Message> = match (&tab.body_hover, &tab.body_completion) {
-        (Some(name), None) => super::headers::variables_tip(&format!("{{{{{name}}}}}"), env, false),
-        _ => Space::new().width(0).height(0).into(),
-    };
     let tracked = iced::widget::mouse_area(editor)
         .on_move(|p| Message::Request(RequestMsg::BodyHovered(Some(p))))
         .on_exit(Message::Request(RequestMsg::BodyHovered(None)));
-    let hover = tooltip(tracked, tip, tooltip::Position::FollowCursor)
-        .gap(12)
-        .delay(std::time::Duration::from_millis(250));
 
     let mut marks = Stack::new().width(Length::Fill).height(Length::Fill);
     for rect in variable_rects(&tab.body_editor, &tab.body_vars) {
@@ -600,10 +593,190 @@ fn variable_hover<'a>(
         .x(caret.x)
         .y((caret.y - tab.body_editor.viewport_scroll()).max(0.0));
 
-    stack![hover, marks, anchor]
+    // The card hangs off the token itself, so the mouse can walk onto it.
+    let card = tab.body_var_card.as_ref();
+    let token = card.map_or(iced::Rectangle::default(), |c| c.anchor);
+    let card_layer = pin(popup::popup_card(
+        Space::new().width(token.width).height(token.height).into(),
+        card.map_or_else(
+            || Space::new().width(0).height(0).into(),
+            |c| variable_card(c, env),
+        ),
+        Message::Request(RequestMsg::BodyVarCardClosed),
+        card.is_some(),
+    ))
+    .x(token.x)
+    .y(token.y);
+
+    stack![tracked, marks, anchor, card_layer]
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
+}
+
+/// Longest value put in the card's field; Copy still takes the whole value.
+const CARD_VALUE_MAX_BYTES: usize = 4096;
+
+/// The card a body variable opens: its value in a selectable field, masked
+/// behind an eye for secret-looking names, with Copy and where it comes from.
+fn variable_card<'a>(
+    card: &'a crate::state::tabs::BodyVarCard,
+    env: Option<&'a crate::domain::environment::AppEnvironment>,
+) -> Element<'a, Message> {
+    use crate::services::{
+        format::head_capped,
+        header_suggest::{DYNAMIC_VARIABLES, Source},
+        variables,
+    };
+    use crate::ui::{theme::MONO, widgets::mini};
+    use iced::widget::{mouse_area, text_input};
+
+    let msg = |m: RequestMsg| Message::Request(m);
+    let name = card.name.as_str();
+    let frame = || Border {
+        color: Palette::border(),
+        width: 1.0,
+        radius: 6.0.into(),
+    };
+    let boxed = |shown: String, color: iced::Color| -> Element<'a, Message> {
+        container(text(shown).size(13).font(MONO).color(color))
+            .padding([7, 10])
+            .width(Length::Fill)
+            .style(move |_| container::Style {
+                background: Some(Background::Color(Palette::background())),
+                border: frame(),
+                ..Default::default()
+            })
+            .into()
+    };
+
+    let value = env.and_then(|e| e.variables.get(name));
+    let dynamic = DYNAMIC_VARIABLES.iter().find(|(n, _)| *n == name);
+    let mut content = column![
+        text(crate::services::format::head_capped(name, 128).to_owned())
+            .size(12)
+            .font(MONO)
+            .color(Palette::text_muted()),
+    ]
+    .spacing(8);
+
+    match (value, dynamic) {
+        (Some(value), _) => {
+            let secret = variables::sensitive(name);
+            let field: Element<'a, Message> = if secret && !card.revealed {
+                boxed(variables::MASK.to_owned(), Palette::text_muted())
+            } else {
+                // Editable input whose edits go nowhere: only a live input
+                // offers mouse selection and Ctrl+C.
+                text_input("(empty)", head_capped(value, CARD_VALUE_MAX_BYTES))
+                    .on_input(move |_| Message::Request(RequestMsg::BodyVarCardPinned))
+                    .size(13)
+                    .font(MONO)
+                    .padding([7, 10])
+                    .width(Length::Fill)
+                    .style(move |_, _| text_input::Style {
+                        background: Background::Color(Palette::background()),
+                        border: frame(),
+                        icon: Palette::text_muted(),
+                        placeholder: Palette::text_subtle(),
+                        value: Palette::text(),
+                        selection: iced::Color {
+                            a: 0.35,
+                            ..Palette::accent()
+                        },
+                    })
+                    .into()
+            };
+            let mut line = row![field].spacing(4).align_y(iced::Alignment::Center);
+            if secret {
+                line = line.push(mini::icon_button(
+                    if card.revealed {
+                        icons::eye_closed()
+                    } else {
+                        icons::eye()
+                    },
+                    if card.revealed {
+                        "Hide value"
+                    } else {
+                        "Show value"
+                    },
+                    Some(msg(RequestMsg::BodyVarCardRevealToggled)),
+                    card.revealed,
+                ));
+            }
+            line = line.push(mini::icon_button(
+                if card.copied {
+                    icons::check()
+                } else {
+                    icons::copy()
+                },
+                "Copy value",
+                Some(msg(RequestMsg::BodyVarCardCopied)),
+                false,
+            ));
+            content = content.push(line);
+            if value.len() > CARD_VALUE_MAX_BYTES && (!secret || card.revealed) {
+                content = content.push(
+                    text("Showing the first 4 KB · Copy takes the full value")
+                        .size(11)
+                        .color(Palette::text_muted()),
+                );
+            }
+            content = content.push(
+                row![
+                    super::headers::source_badge(Source::Environment),
+                    text(env.map_or("", |e| e.name.as_str()).to_owned())
+                        .size(12)
+                        .color(Palette::text_muted()),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+            );
+        }
+        (None, Some((_, description))) => {
+            content = content.push(boxed((*description).to_owned(), Palette::text_muted()));
+            content = content.push(
+                row![
+                    super::headers::source_badge(Source::Dynamic),
+                    text("Dynamic variable · new value on every send")
+                        .size(12)
+                        .color(Palette::text_muted()),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+            );
+        }
+        (None, None) => {
+            content = content.push(boxed(
+                if env.is_some() {
+                    "Unresolved variable".to_owned()
+                } else {
+                    "Unresolved variable · no active environment".to_owned()
+                },
+                Palette::ERROR,
+            ));
+        }
+    }
+
+    let body = container(content)
+        .padding(10)
+        .width(340)
+        .style(|_| container::Style {
+            background: Some(Background::Color(Palette::surface_high())),
+            border: Border {
+                color: Palette::border(),
+                width: 1.0,
+                radius: 8.0.into(),
+            },
+            ..Default::default()
+        });
+    crate::ui::widgets::click_probe::click_probe(
+        mouse_area(body)
+            .on_enter(msg(RequestMsg::BodyVarCardHover(true)))
+            .on_exit(msg(RequestMsg::BodyVarCardHover(false))),
+        msg(RequestMsg::BodyVarCardPinned),
+    )
+    .into()
 }
 
 /// Blue for a variable that resolves, red for one that does not (Postman's).
@@ -620,18 +793,18 @@ fn mark_color(name: &str, env: Option<&crate::domain::environment::AppEnvironmen
 
 /// Where one visual row of a token sits, in the editor's viewport pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct VariableRect {
-    token: usize,
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
+pub(crate) struct VariableRect {
+    pub(crate) token: usize,
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+    pub(crate) width: f32,
+    pub(crate) height: f32,
 }
 
 /// Token geometry for the visible rows. The editor keeps its layout private,
 /// but its own hit-test accounts for wrapping, folding, wide characters and
 /// horizontal scroll, so rows and columns are found by asking it.
-fn variable_rects(
+pub(crate) fn variable_rects(
     editor: &iced_code_editor::CodeEditor,
     tokens: &[crate::services::variables::VarToken],
 ) -> Vec<VariableRect> {

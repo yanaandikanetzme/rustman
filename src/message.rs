@@ -202,6 +202,18 @@ pub enum RequestMsg {
     BodyCompletionPicked(String),
     /// Escape or a click elsewhere closed the list.
     BodyCompletionClosed,
+    /// The hover delay of a body `{{variable}}` ran out.
+    BodyVarCardDue(String),
+    /// The mouse entered (`true`) or left the variable card.
+    BodyVarCardHover(bool),
+    /// A click inside the card keeps it open until an outside click.
+    BodyVarCardPinned,
+    /// The eye button of a secret-looking variable.
+    BodyVarCardRevealToggled,
+    /// Copy the variable's full value.
+    BodyVarCardCopied,
+    /// Escape or an outside click closed the card.
+    BodyVarCardClosed,
     HeaderAdded,
     HeaderRemoved(usize),
     /// A Headers cell was clicked: open its autocomplete list.
@@ -346,6 +358,8 @@ pub enum RequestTab {
 pub enum ResponseMsg {
     TabSelected(ResponseTab),
     CopyBody,
+    /// Forget this tab's response, back to the empty state.
+    ClearResponse,
     /// Save the raw bytes of the current binary response to a file.
     SaveBody,
     /// Result of `SaveBody`; `Ok` carries the written path.

@@ -107,6 +107,26 @@ pub fn popup_sticky<'a, Message: Clone + 'a, Theme: 'a, Renderer: renderer::Rend
     })
 }
 
+/// Interactive card: what happens inside never closes it, and an outside
+/// click closes it and still reaches the widget under it.
+pub fn popup_card<'a, Message: Clone + 'a, Theme: 'a, Renderer: renderer::Renderer + 'a>(
+    content: Element<'a, Message, Theme, Renderer>,
+    menu: Element<'a, Message, Theme, Renderer>,
+    close: Message,
+    open: bool,
+) -> Element<'a, Message, Theme, Renderer> {
+    Element::new(Popup {
+        content,
+        menu,
+        close,
+        align_left: true,
+        open,
+        keep_open: Some(|_| true),
+        pass_outside: true,
+        nav: None,
+    })
+}
+
 impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
     for Popup<'_, Message, Theme, Renderer>
 where

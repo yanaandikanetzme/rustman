@@ -80,6 +80,12 @@ pub(crate) fn update(state: &mut AppState, message: Message) -> Task<Message> {
                         | crate::message::RequestMsg::BodyHovered(_)
                         | crate::message::RequestMsg::BodyCompletionMoved(_)
                         | crate::message::RequestMsg::BodyCompletionClosed
+                        | crate::message::RequestMsg::BodyVarCardDue(_)
+                        | crate::message::RequestMsg::BodyVarCardHover(_)
+                        | crate::message::RequestMsg::BodyVarCardPinned
+                        | crate::message::RequestMsg::BodyVarCardRevealToggled
+                        | crate::message::RequestMsg::BodyVarCardCopied
+                        | crate::message::RequestMsg::BodyVarCardClosed
                         | crate::message::RequestMsg::AutoHeadersToggled
                         | crate::message::RequestMsg::UrlCompletionMoved(_)
                         | crate::message::RequestMsg::UrlVariableValueChanged(_)
@@ -228,6 +234,12 @@ pub(crate) fn marks_session_dirty(message: &Message) -> bool {
                 | crate::message::RequestMsg::BodyHovered(_)
                 | crate::message::RequestMsg::BodyCompletionMoved(_)
                 | crate::message::RequestMsg::BodyCompletionClosed
+                | crate::message::RequestMsg::BodyVarCardDue(_)
+                | crate::message::RequestMsg::BodyVarCardHover(_)
+                | crate::message::RequestMsg::BodyVarCardPinned
+                | crate::message::RequestMsg::BodyVarCardRevealToggled
+                | crate::message::RequestMsg::BodyVarCardCopied
+                | crate::message::RequestMsg::BodyVarCardClosed
                 | crate::message::RequestMsg::UrlCompletionMoved(_)
                 | crate::message::RequestMsg::UrlVariableValueChanged(_)
                 | crate::message::RequestMsg::UrlVariableEnvironmentSelected(_)
@@ -251,6 +263,7 @@ pub(crate) fn marks_session_dirty(message: &Message) -> bool {
                 | crate::message::ResponseMsg::ViewerWrapToggled
                 | crate::message::ResponseMsg::BodyLangSelected(_)
                 | crate::message::ResponseMsg::PreviewToggled
+                | crate::message::ResponseMsg::ClearResponse
         )
     )
 }

@@ -45,14 +45,17 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
         state.show_auto_headers = !state.show_auto_headers;
         return Task::none();
     }
-    if let RequestMsg::BodyHovered(point) = msg {
-        let tab = state.tabs.active_tab_mut();
-        // The editor hit-tests in canvas coordinates; the mouse is in viewport ones.
-        tab.body_hover = point.and_then(|p| {
-            let y = p.y + tab.body_editor.viewport_scroll();
-            body_variable_at(tab, iced::Point::new(p.x, y))
-        });
-        return Task::none();
+    if matches!(
+        &msg,
+        RequestMsg::BodyHovered(_)
+            | RequestMsg::BodyVarCardDue(_)
+            | RequestMsg::BodyVarCardHover(_)
+            | RequestMsg::BodyVarCardPinned
+            | RequestMsg::BodyVarCardRevealToggled
+            | RequestMsg::BodyVarCardCopied
+            | RequestMsg::BodyVarCardClosed
+    ) {
+        return handle_body_var_card(state, msg);
     }
     if matches!(
         &msg,
@@ -87,6 +90,12 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
         | RequestMsg::UrlVariableDismissed
         | RequestMsg::AutoHeadersToggled
         | RequestMsg::BodyHovered(_)
+        | RequestMsg::BodyVarCardDue(_)
+        | RequestMsg::BodyVarCardHover(_)
+        | RequestMsg::BodyVarCardPinned
+        | RequestMsg::BodyVarCardRevealToggled
+        | RequestMsg::BodyVarCardCopied
+        | RequestMsg::BodyVarCardClosed
         | RequestMsg::BodyCompletionMoved(_)
         | RequestMsg::BodyCompletionAccepted
         | RequestMsg::BodyCompletionPicked(_)
@@ -230,7 +239,23 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
             let task = tab.body_editor.update(&msg);
             if content_changed {
                 tab.refresh_body_vars();
+            }
+            match &msg {
+                iced_code_editor::Message::MouseClick(_) => tab.body_dragging = true,
+                iced_code_editor::Message::MouseRelease => tab.body_dragging = false,
+                _ => {}
+            }
+            // These move the text or the caret away from the card's anchor.
+            if content_changed
+                || matches!(
+                    &msg,
+                    iced_code_editor::Message::MouseClick(_)
+                        | iced_code_editor::Message::Scrolled(_)
+                        | iced_code_editor::Message::HorizontalScrolled(_)
+                )
+            {
                 tab.body_hover = None;
+                tab.body_var_card = None;
             }
             match &msg {
                 iced_code_editor::Message::CharacterInput(_)
@@ -1352,6 +1377,7 @@ pub(super) fn apply_parsed_command(
         tab.body_editor = crate::state::tabs::make_code_editor("", "txt");
         tab.body_vars.clear();
         tab.body_completion = None;
+        tab.body_var_card = None;
         tab.form_fields.clear();
         tab.form_viewers.clear();
     }
@@ -1509,28 +1535,128 @@ fn guess_mime(name: &str) -> Option<String> {
     Some(m.to_owned())
 }
 
-/// Bodies past this are not searched on hover: `content()` copies the
-/// whole buffer, fine for API payloads, wasteful for a pasted dump.
-const BODY_HOVER_MAX_BYTES: usize = 2 * 1024 * 1024;
+/// How long the mouse rests on a body variable before its card opens, so
+/// moving across the text does not flash cards.
+const BODY_CARD_DELAY_MS: u64 = 250;
 
-/// The `{{variable}}` under a point of the body editor, like the URL bar's
-/// hover. The editor maps the point to (line, char column) itself, so wrap,
-/// scroll and the gutter are accounted for.
-fn body_variable_at(tab: &RequestTabState, point: iced::Point) -> Option<String> {
-    let pos = tab.body_editor.lsp_position_at_point(point)?;
-    let content = tab.body_editor.content();
-    if content.len() > BODY_HOVER_MAX_BYTES {
-        return None;
+/// Margin around the token where the mouse may be, on its way to the card
+/// that opens just beyond the token, without closing it.
+const BODY_CARD_SLACK: f32 = 6.0;
+
+/// The `{{variable}}` under a point of the body editor. The editor hit-tests
+/// in canvas coordinates (wrap, gutter, folds); the mouse is in viewport ones.
+fn body_token_at(
+    tab: &RequestTabState,
+    point: iced::Point,
+) -> Option<&crate::services::variables::VarToken> {
+    let canvas = iced::Point::new(point.x, point.y + tab.body_editor.viewport_scroll());
+    let pos = tab.body_editor.lsp_position_at_point(canvas)?;
+    let (line, column) = (pos.line as usize, pos.character as usize);
+    tab.body_vars
+        .iter()
+        .find(|t| t.line == line && (t.start..t.end).contains(&column))
+}
+
+fn handle_body_var_card(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
+    let env = state.environments.iter().find(|e| e.is_active);
+    let tab = state.tabs.active_tab_mut();
+    match msg {
+        RequestMsg::BodyHovered(point) => {
+            if tab.body_dragging || tab.body_completion.is_some() {
+                tab.body_hover = None;
+                return Task::none();
+            }
+            let hit = point.and_then(|p| body_token_at(tab, p).map(|t| t.name.clone()));
+            if let Some(card) = &tab.body_var_card
+                && !card.pinned
+                && !card.over_card
+            {
+                let near = point.is_some_and(|p| card.anchor.expand(BODY_CARD_SLACK).contains(p));
+                let other_token = hit.as_ref().is_some_and(|n| *n != card.name);
+                if !near || other_token {
+                    tab.body_var_card = None;
+                }
+            }
+            let is_new =
+                hit.is_some() && hit.as_deref() != tab.body_hover.as_ref().map(|h| h.name.as_str());
+            tab.body_hover = match (hit.clone(), point) {
+                (Some(name), Some(point)) => Some(crate::state::tabs::BodyHover { name, point }),
+                _ => None,
+            };
+            if let Some(name) = hit.filter(|_| is_new && tab.body_var_card.is_none()) {
+                return Task::perform(
+                    async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(BODY_CARD_DELAY_MS))
+                            .await;
+                        name
+                    },
+                    |name| Message::Request(RequestMsg::BodyVarCardDue(name)),
+                );
+            }
+        }
+        RequestMsg::BodyVarCardDue(name) => {
+            let Some(hover) = tab.body_hover.clone().filter(|h| h.name == name) else {
+                return Task::none();
+            };
+            if tab.body_var_card.is_some() || tab.body_dragging || tab.body_completion.is_some() {
+                return Task::none();
+            }
+            let rects = crate::ui::request::body::variable_rects(&tab.body_editor, &tab.body_vars);
+            let anchor = rects.iter().find_map(|r| {
+                let rect = iced::Rectangle {
+                    x: r.x,
+                    y: r.y,
+                    width: r.width,
+                    height: r.height,
+                };
+                rect.contains(hover.point).then_some(rect)
+            });
+            if let Some(anchor) = anchor {
+                tab.body_var_card = Some(crate::state::tabs::BodyVarCard {
+                    name,
+                    anchor,
+                    over_card: false,
+                    pinned: false,
+                    revealed: false,
+                    copied: false,
+                });
+            }
+        }
+        RequestMsg::BodyVarCardHover(over) => {
+            if let Some(card) = &mut tab.body_var_card {
+                card.over_card = over;
+                if !over && !card.pinned {
+                    tab.body_var_card = None;
+                }
+            }
+        }
+        RequestMsg::BodyVarCardPinned => {
+            if let Some(card) = &mut tab.body_var_card {
+                card.pinned = true;
+            }
+        }
+        RequestMsg::BodyVarCardRevealToggled => {
+            if let Some(card) = &mut tab.body_var_card {
+                card.revealed = !card.revealed;
+            }
+        }
+        RequestMsg::BodyVarCardCopied => {
+            let Some(card) = &mut tab.body_var_card else {
+                return Task::none();
+            };
+            let value = env.and_then(|e| e.variables.get(&card.name)).cloned();
+            if let Some(value) = value {
+                card.copied = true;
+                return iced::clipboard::write::<Message>(value);
+            }
+        }
+        RequestMsg::BodyVarCardClosed => {
+            tab.body_var_card = None;
+            tab.body_hover = None;
+        }
+        _ => {}
     }
-    let line = content.lines().nth(pos.line as usize)?;
-    if !line.contains("{{") {
-        return None;
-    }
-    let byte = line
-        .char_indices()
-        .nth(pos.character as usize)
-        .map_or(line.len(), |(b, _)| b);
-    crate::services::variables::variable_at(line, byte)
+    Task::none()
 }
 
 fn handle_body_completion(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
@@ -1978,6 +2104,107 @@ mod body_completion_tests {
             state.tabs.active_tab().body_editor.content(),
             "a {{$timestamp}}"
         );
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod body_var_card_tests {
+    use super::*;
+    use iced_code_editor::Message as Editor;
+
+    fn setup() -> (AppState, std::path::PathBuf, iced::Point) {
+        let dir = std::env::temp_dir().join(format!("rustman-bodycard-{}", uuid::Uuid::new_v4()));
+        let (mut state, _) = crate::app::boot::init_at(dir.clone());
+        state
+            .environments
+            .iter_mut()
+            .for_each(|e| e.is_active = false);
+        state
+            .environments
+            .push(crate::domain::environment::AppEnvironment {
+                id: "e".into(),
+                name: "Environment 1".into(),
+                variables: [("token".to_owned(), "abc".to_owned())].into(),
+                is_active: true,
+            });
+        let _ = handle(
+            &mut state,
+            RequestMsg::BodyEdited(Editor::Paste("{\"a\": \"{{token}}\"}".into())),
+        );
+        let tab = state.tabs.active_tab();
+        let rects = crate::ui::request::body::variable_rects(&tab.body_editor, &tab.body_vars);
+        let r = rects[0];
+        let middle = iced::Point::new(r.x + r.width / 2.0, r.y + r.height / 2.0);
+        (state, dir, middle)
+    }
+
+    fn open_card(state: &mut AppState, at: iced::Point) {
+        let _ = handle(state, RequestMsg::BodyHovered(Some(at)));
+        let _ = handle(state, RequestMsg::BodyVarCardDue("token".into()));
+        assert!(state.tabs.active_tab().body_var_card.is_some());
+    }
+
+    #[test]
+    fn card_waits_for_the_delay_survives_the_walk_to_it_and_closes_on_leave() {
+        let (mut state, dir, at) = setup();
+        let _ = handle(&mut state, RequestMsg::BodyHovered(Some(at)));
+        assert!(state.tabs.active_tab().body_var_card.is_none());
+        let _ = handle(&mut state, RequestMsg::BodyVarCardDue("other".into()));
+        assert!(state.tabs.active_tab().body_var_card.is_none());
+        let _ = handle(&mut state, RequestMsg::BodyVarCardDue("token".into()));
+        let card = state.tabs.active_tab().body_var_card.clone().unwrap();
+        assert!(card.anchor.contains(at));
+        assert!(!card.revealed, "secrets start masked");
+
+        // Onto the card: the editor reports the mouse gone, the card stays.
+        let _ = handle(&mut state, RequestMsg::BodyVarCardHover(true));
+        let _ = handle(&mut state, RequestMsg::BodyHovered(None));
+        assert!(state.tabs.active_tab().body_var_card.is_some());
+        let _ = handle(&mut state, RequestMsg::BodyVarCardHover(false));
+        assert!(state.tabs.active_tab().body_var_card.is_none());
+
+        // Just below the token is on the way to the card; far away is not.
+        open_card(&mut state, at);
+        let below = iced::Point::new(at.x, card.anchor.y + card.anchor.height + 2.0);
+        let _ = handle(&mut state, RequestMsg::BodyHovered(Some(below)));
+        assert!(state.tabs.active_tab().body_var_card.is_some());
+        let far = iced::Point::new(at.x, at.y + 200.0);
+        let _ = handle(&mut state, RequestMsg::BodyHovered(Some(far)));
+        assert!(state.tabs.active_tab().body_var_card.is_none());
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_clicked_card_stays_until_closed_and_reveals_and_copies() {
+        let (mut state, dir, at) = setup();
+        open_card(&mut state, at);
+        let _ = handle(&mut state, RequestMsg::BodyVarCardHover(true));
+        let _ = handle(&mut state, RequestMsg::BodyVarCardPinned);
+        let _ = handle(&mut state, RequestMsg::BodyVarCardHover(false));
+        let _ = handle(&mut state, RequestMsg::BodyHovered(None));
+        let _ = handle(&mut state, RequestMsg::BodyVarCardRevealToggled);
+        let _ = handle(&mut state, RequestMsg::BodyVarCardCopied);
+        let card = state.tabs.active_tab().body_var_card.clone().unwrap();
+        assert!(card.revealed && card.copied);
+        let _ = handle(&mut state, RequestMsg::BodyVarCardClosed);
+        assert!(state.tabs.active_tab().body_var_card.is_none());
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_selection_drag_and_edits_never_leave_a_card_behind() {
+        let (mut state, dir, at) = setup();
+        let _ = handle(&mut state, RequestMsg::BodyEdited(Editor::MouseClick(at)));
+        let _ = handle(&mut state, RequestMsg::BodyHovered(Some(at)));
+        assert!(state.tabs.active_tab().body_hover.is_none());
+        let _ = handle(&mut state, RequestMsg::BodyEdited(Editor::MouseRelease));
+        open_card(&mut state, at);
+        let _ = handle(&mut state, RequestMsg::BodyEdited(Editor::Backspace));
+        assert!(state.tabs.active_tab().body_var_card.is_none());
         drop(state);
         let _ = std::fs::remove_dir_all(dir);
     }

@@ -566,7 +566,7 @@ pub(crate) fn variables_tip<'a>(
 }
 
 /// Badge in front of a variable suggestion, like Postman's `E` / `G` chip.
-fn source_badge(source: Source) -> Element<'static, Message> {
+pub(crate) fn source_badge(source: Source) -> Element<'static, Message> {
     let (label, color) = match source {
         Source::Plain => return Space::new().width(0).into(),
         Source::Environment => ("E", Palette::SUCCESS),

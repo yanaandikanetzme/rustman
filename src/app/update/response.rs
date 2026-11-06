@@ -175,6 +175,10 @@ pub(super) fn handle(state: &mut AppState, msg: ResponseMsg) -> Task<Message> {
             tab.body_preview = Some(false);
             tab.set_body_lang(lang);
         }
+        ResponseMsg::ClearResponse => {
+            state.sidebar.context_menu = None;
+            state.tabs.active_tab_mut().clear_response();
+        }
         ResponseMsg::PreviewToggled => {
             let tab = state.tabs.active_tab_mut();
             tab.body_preview = Some(!tab.body_preview_on());

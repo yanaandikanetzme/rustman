@@ -120,6 +120,25 @@ impl std::fmt::Display for BodyLang {
     }
 }
 
+/// The body `{{variable}}` under the mouse, in the editor's viewport pixels.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BodyHover {
+    pub name: String,
+    pub point: iced::Point,
+}
+
+/// Open variable card: `anchor` is the token's rectangle in the editor's
+/// viewport pixels. It closes when the mouse leaves unless clicked (`pinned`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct BodyVarCard {
+    pub name: String,
+    pub anchor: iced::Rectangle,
+    pub over_card: bool,
+    pub pinned: bool,
+    pub revealed: bool,
+    pub copied: bool,
+}
+
 /// The body editor's `{{` autocomplete: its rows and the token around the
 /// caret, as chars to remove on either side when one is picked.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -188,7 +207,12 @@ pub struct RequestTabState {
     /// Open autocomplete list of a Headers cell (Postman-style).
     pub header_suggest: Option<HeaderSuggest>,
     /// `{{variable}}` under the mouse in the body editor, for its hover card.
-    pub body_hover: Option<String>,
+    pub body_hover: Option<BodyHover>,
+    /// The variable card the mouse can reach, opened after a hover delay.
+    pub body_var_card: Option<BodyVarCard>,
+    /// A selection drag is running in the body editor: no card may open
+    /// under the mouse and take its events.
+    pub body_dragging: bool,
     /// `{{variable}}` tokens of the body, marked over the editor. Refreshed on
     /// every body change so the view never copies the buffer.
     pub body_vars: Vec<crate::services::variables::VarToken>,
@@ -346,6 +370,8 @@ impl RequestTabState {
             url_completion_selected: 0,
             header_suggest: None,
             body_hover: None,
+            body_var_card: None,
+            body_dragging: false,
             body_vars: Vec::new(),
             body_completion: None,
             headers: Vec::new(),
@@ -528,6 +554,22 @@ impl RequestTabState {
         } else {
             BodyLang::Text
         }
+    }
+
+    /// Forget the response and everything derived from it. The test results
+    /// describe that response, so they go too; the request is untouched.
+    pub fn clear_response(&mut self) {
+        self.response = None;
+        self.parsed_json = None;
+        self.json_open.clear();
+        self.body_lang = None;
+        self.body_preview = None;
+        self.response_preview = ResponsePreview::None;
+        self.test_results.clear();
+        self.script_error = None;
+        self.viewer_processing = false;
+        self.set_viewer_content("", false);
+        self.refresh_html_preview();
     }
 
     /// Whether Preview is shown instead of the source. HTML (e.g. a Laravel
@@ -784,6 +826,7 @@ impl RequestTabState {
         self.body_editor = ed;
         self.refresh_body_vars();
         self.body_completion = None;
+        self.body_var_card = None;
     }
 
     /// Replace the whole body through the editor's edit history (select-all +
@@ -808,6 +851,7 @@ impl RequestTabState {
             .update(&iced_code_editor::Message::Paste(text));
         self.refresh_body_vars();
         self.body_completion = None;
+        self.body_var_card = None;
         task
     }
 
@@ -1842,5 +1886,35 @@ mod security_console_tests {
         }
         assert!(tab.script_logs.len() <= 500);
         assert!(tab.console_editor.text().len() <= 64 * 1024);
+    }
+}
+
+#[cfg(test)]
+mod clear_response_tests {
+    use super::*;
+
+    #[test]
+    fn clear_response_drops_the_body_and_keeps_the_request() {
+        let mut tab = RequestTabState::new();
+        tab.url = "https://example.test".into();
+        tab.response = Some(crate::domain::response::HttpResponse {
+            status: 200,
+            body: "<pre>x</pre>".into(),
+            ..Default::default()
+        });
+        tab.set_viewer_content("<pre>x</pre>", false);
+        tab.refresh_html_preview();
+        tab.body_preview = Some(true);
+        tab.json_open.insert("a".into());
+
+        tab.clear_response();
+
+        assert!(tab.response.is_none());
+        assert!(tab.viewer_full.is_empty());
+        assert!(tab.html_blocks.is_empty());
+        assert!(tab.html_fallback_text.is_none());
+        assert!(tab.json_open.is_empty());
+        assert_eq!(tab.body_preview, None);
+        assert_eq!(tab.url, "https://example.test");
     }
 }
