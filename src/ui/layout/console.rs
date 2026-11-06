@@ -3,11 +3,12 @@
 use crate::{
     app::AppState,
     message::{LayoutMsg, Message},
-    state::console::{ConsoleEntry, ConsoleState, NetworkEntry},
+    state::console::{ConsoleEntry, ConsoleFilter, ConsoleState, NetworkEntry},
     ui::{
-        components::atoms::Button,
+        components::molecules::menu::menu_item,
         icons,
         theme::{MONO, Palette, UI_FONT_MEDIUM},
+        widgets::mini,
     },
 };
 use iced::{
@@ -20,7 +21,10 @@ const VALUE_BLUE: iced::Color = iced::Color::from_rgb(0.49, 0.70, 0.98);
 pub(super) fn view(state: &AppState) -> Element<'_, Message> {
     let console = &state.console;
     let mut rows = column![].spacing(2).padding(iced::padding::right(12));
-    for entry in &console.entries {
+    let shown = console.entries.iter().filter(|e| console.filter.shows(e));
+    let mut any = false;
+    for entry in shown {
+        any = true;
         rows = rows.push(match entry {
             ConsoleEntry::Log { text: line, error } => text(line.clone())
                 .size(12)
@@ -35,11 +39,15 @@ pub(super) fn view(state: &AppState) -> Element<'_, Message> {
             ConsoleEntry::Network(entry) => network_row(entry, console),
         });
     }
-    let body: Element<Message> = if console.entries.is_empty() {
-        text("Nothing yet. Requests and console.log output appear here.")
-            .size(12)
-            .color(Palette::text_muted())
-            .into()
+    let body: Element<Message> = if !any {
+        text(if console.entries.is_empty() {
+            "Nothing yet. Requests and console.log output appear here."
+        } else {
+            "Nothing matches this filter."
+        })
+        .size(12)
+        .color(Palette::text_muted())
+        .into()
     } else {
         scrollable(rows)
             .anchor_bottom()
@@ -47,34 +55,102 @@ pub(super) fn view(state: &AppState) -> Element<'_, Message> {
             .style(crate::ui::theme::thin_scrollbar)
             .into()
     };
-    container(
-        column![
-            row![
-                text("Console")
-                    .size(12)
-                    .font(UI_FONT_MEDIUM)
-                    .color(Palette::text()),
-                Space::new().width(Length::Fill),
-                Button::new("Clear")
-                    .ghost()
-                    .on_press(Message::Layout(LayoutMsg::ConsoleCleared)),
-                Button::new("Copy")
-                    .ghost()
-                    .on_press(Message::Layout(LayoutMsg::ConsoleCopied)),
-                Button::new("Close")
-                    .ghost()
-                    .on_press(Message::Layout(LayoutMsg::ConsoleToggled)),
-            ]
-            .spacing(4)
-            .align_y(Alignment::Center),
-            body,
+    container(column![header(state), body,].spacing(6))
+        .padding([6, 12])
+        .height(state.console_height)
+        .width(Length::Fill)
+        .style(crate::ui::styles::content_surface)
+        .into()
+}
+
+const FILTER_MENU: &str = "console-filter";
+
+/// Postman's strip: the panel's name at the left; the filter, Clear, Copy and
+/// Close at the right.
+fn header(state: &AppState) -> Element<'_, Message> {
+    let open = state.sidebar.context_menu.as_deref() == Some(FILTER_MENU);
+    let filter = state.console.filter;
+    let items = ConsoleFilter::ALL
+        .into_iter()
+        .map(|choice| {
+            menu_item(
+                (choice == filter).then(icons::check),
+                choice.label(),
+                Some(Message::Layout(LayoutMsg::ConsoleFilterSet(choice))),
+                false,
+            )
+        })
+        .collect();
+    let filter_button = button(
+        row![
+            text(filter.label()).size(12).color(Palette::text_muted()),
+            icons::chevron_down().size(11).color(Palette::text_muted()),
         ]
-        .spacing(6),
+        .spacing(6)
+        .align_y(Alignment::Center),
     )
-    .padding([6, 12])
-    .height(280)
-    .width(Length::Fill)
-    .style(crate::ui::styles::content_surface)
+    .on_press(Message::Sidebar(
+        crate::message::SidebarMsg::ContextMenuOpened(FILTER_MENU.to_owned()),
+    ))
+    .padding([3, 8])
+    .style(iced::widget::button::text);
+    let clear = button(
+        text("Clear")
+            .size(12)
+            .font(UI_FONT_MEDIUM)
+            .color(Palette::text()),
+    )
+    .on_press(Message::Layout(LayoutMsg::ConsoleCleared))
+    .padding([3, 12])
+    .style(|_, status| button::Style {
+        background: Some(iced::Background::Color(
+            if matches!(status, button::Status::Hovered) {
+                Palette::hover()
+            } else {
+                Palette::surface_high()
+            },
+        )),
+        text_color: Palette::text(),
+        border: iced::Border {
+            radius: 5.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    row![
+        container(
+            text("Console")
+                .size(12)
+                .font(UI_FONT_MEDIUM)
+                .color(Palette::text())
+        )
+        .padding([3, 8])
+        .style(|_| container::Style {
+            background: Some(iced::Background::Color(Palette::surface_high())),
+            border: iced::Border {
+                radius: 5.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }),
+        Space::new().width(Length::Fill),
+        mini::anchored_menu(filter_button.into(), open, items, 140.0),
+        clear,
+        mini::icon_button(
+            icons::copy(),
+            "Copy all",
+            Some(Message::Layout(LayoutMsg::ConsoleCopied)),
+            false,
+        ),
+        mini::icon_button(
+            icons::close(),
+            "Close",
+            Some(Message::Layout(LayoutMsg::ConsoleToggled)),
+            false,
+        ),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center)
     .into()
 }
 

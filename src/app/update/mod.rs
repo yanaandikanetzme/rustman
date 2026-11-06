@@ -54,6 +54,7 @@ pub(crate) fn update(state: &mut AppState, message: Message) -> Task<Message> {
                     LayoutMsg::SnippetWidthChanged(_)
                         | LayoutMsg::SidebarWidthChanged(_)
                         | LayoutMsg::PanelSplitChanged(_)
+                        | LayoutMsg::ConsoleResized(_)
                         | LayoutMsg::SnippetCopied
                 )
                 | Message::Sidebar(
@@ -153,6 +154,8 @@ pub(crate) fn marks_session_dirty(message: &Message) -> bool {
         message,
         Message::Layout(
             LayoutMsg::ConsoleToggled
+                | LayoutMsg::ConsoleResized(_)
+                | LayoutMsg::ConsoleFilterSet(_)
                 | LayoutMsg::ConsoleCleared
                 | LayoutMsg::ConsoleCopied
                 | LayoutMsg::ConsoleRowToggled(_)
@@ -413,6 +416,11 @@ fn blocks_example_exit(state: &mut AppState, message: &Message) -> bool {
 fn handle_layout(state: &mut AppState, msg: LayoutMsg) -> Task<Message> {
     match msg {
         LayoutMsg::ConsoleToggled => state.console_open = !state.console_open,
+        LayoutMsg::ConsoleResized(height) => state.console_height = height,
+        LayoutMsg::ConsoleFilterSet(filter) => {
+            state.console.filter = filter;
+            state.sidebar.context_menu = None;
+        }
         LayoutMsg::ConsoleCleared => state.console.clear(),
         LayoutMsg::ConsoleCopied => {
             return iced::clipboard::write::<Message>(state.console.to_text());

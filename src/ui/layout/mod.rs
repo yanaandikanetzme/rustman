@@ -11,6 +11,9 @@ use crate::{
 
 mod collections_modal;
 mod console;
+
+/// Thickness of the drag handle above the Console.
+const CONSOLE_HANDLE: f32 = 8.0;
 mod dialogs;
 pub mod header;
 mod status_bar;
@@ -49,7 +52,10 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
     let mut workspace = column![header::view(state), shell].height(Length::Fill);
     if state.console_open {
         workspace = workspace
-            .push(iced::widget::rule::horizontal(1).style(crate::ui::styles::divider))
+            .push(crate::ui::widgets::height_splitter::height_splitter(
+                state.console_height,
+                |height| Message::Layout(crate::message::LayoutMsg::ConsoleResized(height)),
+            ))
             .push(console::view(state));
     }
     let main: Element<Message> = workspace
@@ -350,7 +356,12 @@ fn main_area(state: &AppState) -> Element<'_, Message> {
                 state.panel_split,
                 crate::ui::widgets::panel_splitter::Orientation::Horizontal,
                 splitter,
-            ),
+            )
+            .reserve_below(if state.console_open {
+                state.console_height + CONSOLE_HANDLE
+            } else {
+                0.0
+            }),
             response_panel.height(Length::FillPortion(resp_split)),
         ]
         .spacing(0)

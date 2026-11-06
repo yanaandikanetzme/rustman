@@ -622,6 +622,10 @@ pub enum ImportMsg {
 #[derive(Debug, Clone)]
 pub enum LayoutMsg {
     ConsoleToggled,
+    /// The Console's top edge was dragged: its new height.
+    ConsoleResized(f32),
+    /// A pick in the Console's filter menu.
+    ConsoleFilterSet(crate::state::console::ConsoleFilter),
     /// Empty the Console.
     ConsoleCleared,
     /// Copy the whole Console as text.

@@ -50,9 +50,44 @@ pub enum ConsoleEntry {
     Network(Box<NetworkEntry>),
 }
 
+/// The panel's log filter.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ConsoleFilter {
+    #[default]
+    All,
+    Network,
+    Logs,
+    Errors,
+}
+
+impl ConsoleFilter {
+    pub const ALL: [Self; 4] = [Self::All, Self::Network, Self::Logs, Self::Errors];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "All Logs",
+            Self::Network => "Network",
+            Self::Logs => "Logs",
+            Self::Errors => "Errors",
+        }
+    }
+
+    pub fn shows(self, entry: &ConsoleEntry) -> bool {
+        match (self, entry) {
+            (Self::All, _)
+            | (Self::Network, ConsoleEntry::Network(_))
+            | (Self::Logs, ConsoleEntry::Log { .. }) => true,
+            (Self::Errors, ConsoleEntry::Log { error, .. }) => *error,
+            (Self::Errors, ConsoleEntry::Network(n)) => n.error.is_some() || n.status >= 400,
+            _ => false,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct ConsoleState {
     pub entries: Vec<ConsoleEntry>,
+    pub filter: ConsoleFilter,
     /// Expanded rows and sections: `"{id}"`, `"{id}:{section}"`.
     pub expanded: HashSet<String>,
     next_id: u64,
@@ -137,6 +172,23 @@ impl ConsoleState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn filters_pick_their_entries() {
+        let log = ConsoleEntry::Log {
+            text: "a".into(),
+            error: false,
+        };
+        let failed = ConsoleEntry::Log {
+            text: "b".into(),
+            error: true,
+        };
+        assert!(ConsoleFilter::All.shows(&log));
+        assert!(ConsoleFilter::Logs.shows(&failed));
+        assert!(!ConsoleFilter::Network.shows(&log));
+        assert!(!ConsoleFilter::Errors.shows(&log));
+        assert!(ConsoleFilter::Errors.shows(&failed));
+    }
 
     #[test]
     fn the_log_is_bounded_and_clear_forgets_expansion() {

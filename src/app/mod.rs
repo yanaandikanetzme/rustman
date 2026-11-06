@@ -38,6 +38,8 @@ pub struct AppState {
     pub browser_previews: Vec<crate::services::preview_file::PreviewFile>,
     pub environment_cell: Option<crate::state::environment_cell::EnvironmentCellEditor>,
     pub console_open: bool,
+    /// The Console panel's height, dragged from its top edge.
+    pub console_height: f32,
     pub console: crate::state::console::ConsoleState,
     pub notification: Option<crate::state::notifications::Toast>,
     pub examples: crate::state::examples::ExamplesState,
