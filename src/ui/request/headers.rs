@@ -354,22 +354,14 @@ fn header_table<'a>(
         let key_open = cell_open(SuggestField::Key);
         let value_open = cell_open(SuggestField::Value);
         let selected = open.map_or(0, |s| s.selected);
-        let secret = crate::services::variables::sensitive(&item.key);
-        // No hover card over an open list: the two would cover each other.
-        let tip = |open: bool, text: &str, mask: bool| {
-            if open {
-                Space::new().width(0).height(0).into()
-            } else {
-                variables_tip(text, env, mask)
-            }
-        };
         let key_cell = suggest_cell(
             key_cell,
             i,
             SuggestField::Key,
             key_open.then_some(&list[..]).unwrap_or(&[]),
             selected,
-            tip(key_open, &item.key, false),
+            tab.var_card.as_ref(),
+            env,
         );
         let value_cell = suggest_cell(
             value_cell,
@@ -377,7 +369,8 @@ fn header_table<'a>(
             SuggestField::Value,
             value_open.then_some(&list[..]).unwrap_or(&[]),
             selected,
-            tip(value_open, &item.value, secret),
+            tab.var_card.as_ref(),
+            env,
         );
         let description = super::cell::text_cell(
             "Description",
@@ -416,20 +409,35 @@ fn suggest_cell<'a>(
     field: SuggestField,
     list: &[Suggestion],
     selected: usize,
-    tip: Element<'a, Message>,
+    card: Option<&'a crate::state::tabs::VarCard>,
+    env: Option<&'a AppEnvironment>,
 ) -> Element<'a, Message> {
     use crate::ui::widgets::{click_probe::click_probe, popup};
     let probe = click_probe(
         cell,
         Message::Request(RequestMsg::HeaderSuggestOpened(row, field)),
     );
-    // The tooltip is always there (empty without variables) so the input's
-    // widget tree, and its focus, stays the same while typing `{{`.
-    let hover = iced::widget::tooltip(probe, tip, iced::widget::tooltip::Position::Bottom)
-        .gap(4)
-        .delay(std::time::Duration::from_millis(250));
+    let tracked = iced::widget::mouse_area(probe)
+        .on_enter(Message::Request(RequestMsg::HeaderVarHovered(
+            row, field, true,
+        )))
+        .on_exit(Message::Request(RequestMsg::HeaderVarHovered(
+            row, field, false,
+        )));
+    // Both popups are always there (empty when closed) so the input's widget
+    // tree, and its focus, stays the same while typing `{{`.
+    let here = card.filter(|c| c.anchor == crate::state::tabs::VarCardAnchor::Header(row, field));
+    let with_card = popup::popup_card(
+        tracked.into(),
+        here.map_or_else(
+            || Space::new().width(0).height(0).into(),
+            |c| super::var_card::view(c, env),
+        ),
+        Message::Request(RequestMsg::VarCardClosed),
+        here.is_some(),
+    );
     popup::popup_suggest(
-        hover.into(),
+        with_card,
         suggest_list(list, selected, move |apply| {
             Message::Request(RequestMsg::HeaderSuggestionPicked(row, field, apply))
         }),
@@ -444,7 +452,7 @@ fn suggest_cell<'a>(
 }
 
 /// `{{name}}` tokens in a cell, in order, without repeats.
-fn variable_names(text: &str) -> Vec<&str> {
+pub(crate) fn variable_names(text: &str) -> Vec<&str> {
     let mut out: Vec<&str> = Vec::new();
     let mut rest = text;
     while let Some(start) = rest.find("{{") {
@@ -457,112 +465,6 @@ fn variable_names(text: &str) -> Vec<&str> {
         rest = &after[end + 2..];
     }
     out
-}
-
-/// Postman's variable hover card: the resolved value in a box, then where
-/// it comes from. Secret-looking names stay masked; unknown names are red.
-/// Empty (renders nothing) when the cell holds no variables.
-pub(crate) fn variables_tip<'a>(
-    text_value: &str,
-    env: Option<&'a AppEnvironment>,
-    mask: bool,
-) -> Element<'a, Message> {
-    use crate::services::{header_suggest, variables};
-    let names = variable_names(text_value);
-    if names.is_empty() || !super::cell::is_inline(text_value) {
-        return Space::new().width(0).height(0).into();
-    }
-    let mut col = column![].spacing(10);
-    for name in names.into_iter().take(4) {
-        let env_value = env.and_then(|e| e.variables.get(name));
-        let dynamic = header_suggest::DYNAMIC_VARIABLES
-            .iter()
-            .find(|(n, _)| *n == name)
-            .map(|(_, d)| *d);
-        let (shown, color, source) = match (env_value, dynamic) {
-            (Some(v), _) => (
-                if mask {
-                    variables::MASK.to_owned()
-                } else {
-                    variables::preview(name, v)
-                },
-                Palette::text(),
-                Some((
-                    Source::Environment,
-                    env.map_or("", |e| e.name.as_str()).to_owned(),
-                )),
-            ),
-            (None, Some(desc)) => (
-                desc.to_owned(),
-                Palette::text_muted(),
-                Some((
-                    Source::Dynamic,
-                    "Dynamic variable · new value on every send".to_owned(),
-                )),
-            ),
-            (None, None) => (
-                if env.is_some() {
-                    format!("Unresolved variable: {name}")
-                } else {
-                    format!("Unresolved variable: {name} · no active environment")
-                },
-                Palette::ERROR,
-                None,
-            ),
-        };
-        let mut block = column![
-            container(text(shown).size(13).font(MONO).color(color))
-                .padding([8, 10])
-                .width(Length::Fill)
-                .style(|_| container::Style {
-                    background: Some(Background::Color(Palette::background())),
-                    border: Border {
-                        color: Palette::border(),
-                        width: 1.0,
-                        radius: 6.0.into(),
-                    },
-                    ..Default::default()
-                }),
-        ]
-        .spacing(8);
-        if let Some((src, label)) = source {
-            block = block.push(
-                row![
-                    source_badge(src),
-                    text(label).size(12).color(Palette::text_muted()),
-                    Space::new().width(Length::Fill),
-                    text(crate::services::format::head_capped(name, 64).to_owned())
-                        .size(11)
-                        .font(MONO)
-                        .color(Palette::text_subtle()),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
-            );
-        }
-        col = col.push(block);
-    }
-    container(col)
-        .padding(10)
-        .width(320)
-        .style(|_| container::Style {
-            background: Some(Background::Color(Palette::surface())),
-            border: Border {
-                color: Palette::border(),
-                width: 1.0,
-                radius: 8.0.into(),
-            },
-            shadow: iced::Shadow {
-                color: iced::Color {
-                    a: 0.35,
-                    ..iced::Color::BLACK
-                },
-                offset: iced::Vector::new(0.0, 4.0),
-                blur_radius: 12.0,
-            },
-            ..Default::default()
-        })
-        .into()
 }
 
 /// Badge in front of a variable suggestion, like Postman's `E` / `G` chip.

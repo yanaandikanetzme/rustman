@@ -47,15 +47,27 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
     }
     if matches!(
         &msg,
-        RequestMsg::BodyHovered(_)
-            | RequestMsg::BodyVarCardDue(_)
-            | RequestMsg::BodyVarCardHover(_)
-            | RequestMsg::BodyVarCardPinned
-            | RequestMsg::BodyVarCardRevealToggled
-            | RequestMsg::BodyVarCardCopied
-            | RequestMsg::BodyVarCardClosed
+        RequestMsg::HeaderKeyChanged(..)
+            | RequestMsg::HeaderValueChanged(..)
+            | RequestMsg::HeaderRemoved(_)
+            | RequestMsg::TabSelected(_)
     ) {
-        return handle_body_var_card(state, msg);
+        state.tabs.active_tab_mut().var_card = None;
+    }
+    if matches!(
+        &msg,
+        RequestMsg::BodyHovered(_)
+            | RequestMsg::VarCardDue(_)
+            | RequestMsg::VarCardHover(_)
+            | RequestMsg::VarCardPinned
+            | RequestMsg::VarCardRevealToggled
+            | RequestMsg::VarCardCopied(_)
+            | RequestMsg::VarCardClosed
+            | RequestMsg::HeaderVarHovered(..)
+            | RequestMsg::HeaderVarDue(..)
+            | RequestMsg::VarCardLeaveDue
+    ) {
+        return handle_var_card(state, msg);
     }
     if matches!(
         &msg,
@@ -90,12 +102,15 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
         | RequestMsg::UrlVariableDismissed
         | RequestMsg::AutoHeadersToggled
         | RequestMsg::BodyHovered(_)
-        | RequestMsg::BodyVarCardDue(_)
-        | RequestMsg::BodyVarCardHover(_)
-        | RequestMsg::BodyVarCardPinned
-        | RequestMsg::BodyVarCardRevealToggled
-        | RequestMsg::BodyVarCardCopied
-        | RequestMsg::BodyVarCardClosed
+        | RequestMsg::VarCardDue(_)
+        | RequestMsg::VarCardHover(_)
+        | RequestMsg::VarCardPinned
+        | RequestMsg::VarCardRevealToggled
+        | RequestMsg::VarCardCopied(_)
+        | RequestMsg::VarCardClosed
+        | RequestMsg::HeaderVarHovered(..)
+        | RequestMsg::HeaderVarDue(..)
+        | RequestMsg::VarCardLeaveDue
         | RequestMsg::BodyCompletionMoved(_)
         | RequestMsg::BodyCompletionAccepted
         | RequestMsg::BodyCompletionPicked(_)
@@ -255,7 +270,7 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
                 )
             {
                 tab.body_hover = None;
-                tab.body_var_card = None;
+                tab.var_card = None;
             }
             match &msg {
                 iced_code_editor::Message::CharacterInput(_)
@@ -1377,7 +1392,7 @@ pub(super) fn apply_parsed_command(
         tab.body_editor = crate::state::tabs::make_code_editor("", "txt");
         tab.body_vars.clear();
         tab.body_completion = None;
-        tab.body_var_card = None;
+        tab.var_card = None;
         tab.form_fields.clear();
         tab.form_viewers.clear();
     }
@@ -1557,7 +1572,62 @@ fn body_token_at(
         .find(|t| t.line == line && (t.start..t.end).contains(&column))
 }
 
-fn handle_body_var_card(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
+/// How long a Headers card waits for the mouse to cross the gap to it.
+const VAR_CARD_LEAVE_MS: u64 = 150;
+
+fn var_card_after(ms: u64, message: RequestMsg) -> Task<Message> {
+    // Inside `async`: creating the sleep needs the runtime, update() has none.
+    Task::perform(
+        async move { tokio::time::sleep(std::time::Duration::from_millis(ms)).await },
+        move |()| Message::Request(message.clone()),
+    )
+}
+
+fn header_cell(
+    tab: &RequestTabState,
+    row: usize,
+    field: crate::state::tabs::SuggestField,
+) -> Option<&str> {
+    use crate::state::tabs::SuggestField;
+    let header = tab.headers.get(row)?;
+    Some(match field {
+        SuggestField::Key => &header.key,
+        SuggestField::Value => &header.value,
+    })
+}
+
+/// Open the card of a Headers cell. Does nothing for a cell without variables.
+fn open_header_card(
+    tab: &mut RequestTabState,
+    row: usize,
+    field: crate::state::tabs::SuggestField,
+    pinned: bool,
+) {
+    use crate::state::tabs::{SuggestField, VarCard, VarCardAnchor};
+    let Some(text) = header_cell(tab, row, field) else {
+        return;
+    };
+    let names: Vec<String> = crate::ui::request::headers::variable_names(text)
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    if names.is_empty() {
+        return;
+    }
+    let mask_all = field == SuggestField::Value
+        && crate::services::variables::sensitive(&tab.headers[row].key);
+    tab.var_card = Some(VarCard {
+        names,
+        anchor: VarCardAnchor::Header(row, field),
+        mask_all,
+        over_card: false,
+        pinned,
+        revealed: false,
+        copied: None,
+    });
+}
+
+fn handle_var_card(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
     let env = state.environments.iter().find(|e| e.is_active);
     let tab = state.tabs.active_tab_mut();
     match msg {
@@ -1567,14 +1637,15 @@ fn handle_body_var_card(state: &mut AppState, msg: RequestMsg) -> Task<Message> 
                 return Task::none();
             }
             let hit = point.and_then(|p| body_token_at(tab, p).map(|t| t.name.clone()));
-            if let Some(card) = &tab.body_var_card
+            if let Some(card) = &tab.var_card
                 && !card.pinned
                 && !card.over_card
+                && let crate::state::tabs::VarCardAnchor::Body(rect) = card.anchor
             {
-                let near = point.is_some_and(|p| card.anchor.expand(BODY_CARD_SLACK).contains(p));
-                let other_token = hit.as_ref().is_some_and(|n| *n != card.name);
+                let near = point.is_some_and(|p| rect.expand(BODY_CARD_SLACK).contains(p));
+                let other_token = hit.as_ref().is_some_and(|n| !card.names.contains(n));
                 if !near || other_token {
-                    tab.body_var_card = None;
+                    tab.var_card = None;
                 }
             }
             let is_new =
@@ -1583,22 +1654,22 @@ fn handle_body_var_card(state: &mut AppState, msg: RequestMsg) -> Task<Message> 
                 (Some(name), Some(point)) => Some(crate::state::tabs::BodyHover { name, point }),
                 _ => None,
             };
-            if let Some(name) = hit.filter(|_| is_new && tab.body_var_card.is_none()) {
+            if let Some(name) = hit.filter(|_| is_new && tab.var_card.is_none()) {
                 return Task::perform(
                     async move {
                         tokio::time::sleep(std::time::Duration::from_millis(BODY_CARD_DELAY_MS))
                             .await;
                         name
                     },
-                    |name| Message::Request(RequestMsg::BodyVarCardDue(name)),
+                    |name| Message::Request(RequestMsg::VarCardDue(name)),
                 );
             }
         }
-        RequestMsg::BodyVarCardDue(name) => {
+        RequestMsg::VarCardDue(name) => {
             let Some(hover) = tab.body_hover.clone().filter(|h| h.name == name) else {
                 return Task::none();
             };
-            if tab.body_var_card.is_some() || tab.body_dragging || tab.body_completion.is_some() {
+            if tab.var_card.is_some() || tab.body_dragging || tab.body_completion.is_some() {
                 return Task::none();
             }
             let rects = crate::ui::request::body::variable_rects(&tab.body_editor, &tab.body_vars);
@@ -1612,46 +1683,94 @@ fn handle_body_var_card(state: &mut AppState, msg: RequestMsg) -> Task<Message> 
                 rect.contains(hover.point).then_some(rect)
             });
             if let Some(anchor) = anchor {
-                tab.body_var_card = Some(crate::state::tabs::BodyVarCard {
-                    name,
-                    anchor,
+                tab.var_card = Some(crate::state::tabs::VarCard {
+                    names: vec![name],
+                    anchor: crate::state::tabs::VarCardAnchor::Body(anchor),
+                    mask_all: false,
                     over_card: false,
                     pinned: false,
                     revealed: false,
-                    copied: false,
+                    copied: None,
                 });
             }
         }
-        RequestMsg::BodyVarCardHover(over) => {
-            if let Some(card) = &mut tab.body_var_card {
+        RequestMsg::VarCardHover(over) => {
+            if let Some(card) = &mut tab.var_card {
                 card.over_card = over;
                 if !over && !card.pinned {
-                    tab.body_var_card = None;
+                    // A cell keeps a gap to its card; a token's slack covers it.
+                    if matches!(card.anchor, crate::state::tabs::VarCardAnchor::Body(_)) {
+                        tab.var_card = None;
+                    } else {
+                        return var_card_after(VAR_CARD_LEAVE_MS, RequestMsg::VarCardLeaveDue);
+                    }
                 }
             }
         }
-        RequestMsg::BodyVarCardPinned => {
-            if let Some(card) = &mut tab.body_var_card {
+        RequestMsg::HeaderVarHovered(row, field, true) => {
+            tab.header_hover = Some((row, field));
+            let here = tab
+                .var_card
+                .as_ref()
+                .is_some_and(|c| c.anchor == crate::state::tabs::VarCardAnchor::Header(row, field));
+            let has_variables = header_cell(tab, row, field)
+                .is_some_and(|text| !crate::ui::request::headers::variable_names(text).is_empty());
+            if has_variables && !here && tab.header_suggest.is_none() {
+                return var_card_after(BODY_CARD_DELAY_MS, RequestMsg::HeaderVarDue(row, field));
+            }
+        }
+        RequestMsg::HeaderVarHovered(row, field, false) => {
+            if tab.header_hover == Some((row, field)) {
+                tab.header_hover = None;
+            }
+            if tab.var_card.as_ref().is_some_and(|c| {
+                !c.pinned && c.anchor == crate::state::tabs::VarCardAnchor::Header(row, field)
+            }) {
+                return var_card_after(VAR_CARD_LEAVE_MS, RequestMsg::VarCardLeaveDue);
+            }
+        }
+        RequestMsg::HeaderVarDue(row, field) => {
+            if tab.header_hover == Some((row, field))
+                && tab.var_card.is_none()
+                && tab.header_suggest.is_none()
+            {
+                open_header_card(tab, row, field, false);
+            }
+        }
+        RequestMsg::VarCardLeaveDue => {
+            let hover = tab.header_hover;
+            if tab.var_card.as_ref().is_some_and(|c| {
+                let on_cell = matches!(
+                    c.anchor,
+                    crate::state::tabs::VarCardAnchor::Header(row, field)
+                        if hover == Some((row, field))
+                );
+                !c.pinned && !c.over_card && !on_cell
+            }) {
+                tab.var_card = None;
+            }
+        }
+        RequestMsg::VarCardPinned => {
+            if let Some(card) = &mut tab.var_card {
                 card.pinned = true;
             }
         }
-        RequestMsg::BodyVarCardRevealToggled => {
-            if let Some(card) = &mut tab.body_var_card {
+        RequestMsg::VarCardRevealToggled => {
+            if let Some(card) = &mut tab.var_card {
                 card.revealed = !card.revealed;
             }
         }
-        RequestMsg::BodyVarCardCopied => {
-            let Some(card) = &mut tab.body_var_card else {
+        RequestMsg::VarCardCopied(name) => {
+            let Some(card) = &mut tab.var_card else {
                 return Task::none();
             };
-            let value = env.and_then(|e| e.variables.get(&card.name)).cloned();
-            if let Some(value) = value {
-                card.copied = true;
+            if let Some(value) = env.and_then(|e| e.variables.get(&name)).cloned() {
+                card.copied = Some(name);
                 return iced::clipboard::write::<Message>(value);
             }
         }
-        RequestMsg::BodyVarCardClosed => {
-            tab.body_var_card = None;
+        RequestMsg::VarCardClosed => {
+            tab.var_card = None;
             tab.body_hover = None;
         }
         _ => {}
@@ -1723,10 +1842,31 @@ fn handle_header_suggest(state: &mut AppState, msg: RequestMsg) -> Task<Message>
     match msg {
         RequestMsg::HeaderSuggestOpened(row, field) => {
             let tab = state.tabs.active_tab_mut();
-            if row < tab.headers.len()
-                && tab.header_suggest.map(|s| (s.row, s.field)) != Some((row, field))
-            {
-                open_suggest(tab, row, field);
+            // A finished `{{variable}}` shows its value; only an open `{{`
+            // or a plain cell offers the list.
+            let shows_value = header_cell(tab, row, field).is_some_and(|text| {
+                !crate::ui::request::headers::variable_names(text).is_empty()
+                    && crate::services::header_suggest::variable_trigger(text).is_none()
+            });
+            if shows_value {
+                tab.header_suggest = None;
+                let here = tab.var_card.as_ref().is_some_and(|c| {
+                    c.anchor == crate::state::tabs::VarCardAnchor::Header(row, field)
+                });
+                if here {
+                    if let Some(card) = &mut tab.var_card {
+                        card.pinned = true;
+                    }
+                } else {
+                    open_header_card(tab, row, field, true);
+                }
+            } else {
+                tab.var_card = None;
+                if row < tab.headers.len()
+                    && tab.header_suggest.map(|s| (s.row, s.field)) != Some((row, field))
+                {
+                    open_suggest(tab, row, field);
+                }
             }
         }
         RequestMsg::HeaderSuggestClosed => {
@@ -2110,7 +2250,7 @@ mod body_completion_tests {
 }
 
 #[cfg(test)]
-mod body_var_card_tests {
+mod var_card_tests {
     use super::*;
     use iced_code_editor::Message as Editor;
 
@@ -2142,37 +2282,40 @@ mod body_var_card_tests {
 
     fn open_card(state: &mut AppState, at: iced::Point) {
         let _ = handle(state, RequestMsg::BodyHovered(Some(at)));
-        let _ = handle(state, RequestMsg::BodyVarCardDue("token".into()));
-        assert!(state.tabs.active_tab().body_var_card.is_some());
+        let _ = handle(state, RequestMsg::VarCardDue("token".into()));
+        assert!(state.tabs.active_tab().var_card.is_some());
     }
 
     #[test]
     fn card_waits_for_the_delay_survives_the_walk_to_it_and_closes_on_leave() {
         let (mut state, dir, at) = setup();
         let _ = handle(&mut state, RequestMsg::BodyHovered(Some(at)));
-        assert!(state.tabs.active_tab().body_var_card.is_none());
-        let _ = handle(&mut state, RequestMsg::BodyVarCardDue("other".into()));
-        assert!(state.tabs.active_tab().body_var_card.is_none());
-        let _ = handle(&mut state, RequestMsg::BodyVarCardDue("token".into()));
-        let card = state.tabs.active_tab().body_var_card.clone().unwrap();
-        assert!(card.anchor.contains(at));
+        assert!(state.tabs.active_tab().var_card.is_none());
+        let _ = handle(&mut state, RequestMsg::VarCardDue("other".into()));
+        assert!(state.tabs.active_tab().var_card.is_none());
+        let _ = handle(&mut state, RequestMsg::VarCardDue("token".into()));
+        let card = state.tabs.active_tab().var_card.clone().unwrap();
+        let crate::state::tabs::VarCardAnchor::Body(rect) = card.anchor else {
+            panic!("a body card hangs from its token");
+        };
+        assert!(rect.contains(at));
         assert!(!card.revealed, "secrets start masked");
 
         // Onto the card: the editor reports the mouse gone, the card stays.
-        let _ = handle(&mut state, RequestMsg::BodyVarCardHover(true));
+        let _ = handle(&mut state, RequestMsg::VarCardHover(true));
         let _ = handle(&mut state, RequestMsg::BodyHovered(None));
-        assert!(state.tabs.active_tab().body_var_card.is_some());
-        let _ = handle(&mut state, RequestMsg::BodyVarCardHover(false));
-        assert!(state.tabs.active_tab().body_var_card.is_none());
+        assert!(state.tabs.active_tab().var_card.is_some());
+        let _ = handle(&mut state, RequestMsg::VarCardHover(false));
+        assert!(state.tabs.active_tab().var_card.is_none());
 
         // Just below the token is on the way to the card; far away is not.
         open_card(&mut state, at);
-        let below = iced::Point::new(at.x, card.anchor.y + card.anchor.height + 2.0);
+        let below = iced::Point::new(at.x, rect.y + rect.height + 2.0);
         let _ = handle(&mut state, RequestMsg::BodyHovered(Some(below)));
-        assert!(state.tabs.active_tab().body_var_card.is_some());
+        assert!(state.tabs.active_tab().var_card.is_some());
         let far = iced::Point::new(at.x, at.y + 200.0);
         let _ = handle(&mut state, RequestMsg::BodyHovered(Some(far)));
-        assert!(state.tabs.active_tab().body_var_card.is_none());
+        assert!(state.tabs.active_tab().var_card.is_none());
         drop(state);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -2181,16 +2324,17 @@ mod body_var_card_tests {
     fn a_clicked_card_stays_until_closed_and_reveals_and_copies() {
         let (mut state, dir, at) = setup();
         open_card(&mut state, at);
-        let _ = handle(&mut state, RequestMsg::BodyVarCardHover(true));
-        let _ = handle(&mut state, RequestMsg::BodyVarCardPinned);
-        let _ = handle(&mut state, RequestMsg::BodyVarCardHover(false));
+        let _ = handle(&mut state, RequestMsg::VarCardHover(true));
+        let _ = handle(&mut state, RequestMsg::VarCardPinned);
+        let _ = handle(&mut state, RequestMsg::VarCardHover(false));
         let _ = handle(&mut state, RequestMsg::BodyHovered(None));
-        let _ = handle(&mut state, RequestMsg::BodyVarCardRevealToggled);
-        let _ = handle(&mut state, RequestMsg::BodyVarCardCopied);
-        let card = state.tabs.active_tab().body_var_card.clone().unwrap();
-        assert!(card.revealed && card.copied);
-        let _ = handle(&mut state, RequestMsg::BodyVarCardClosed);
-        assert!(state.tabs.active_tab().body_var_card.is_none());
+        let _ = handle(&mut state, RequestMsg::VarCardRevealToggled);
+        let _ = handle(&mut state, RequestMsg::VarCardCopied("token".into()));
+        let card = state.tabs.active_tab().var_card.clone().unwrap();
+        assert!(card.revealed);
+        assert_eq!(card.copied.as_deref(), Some("token"));
+        let _ = handle(&mut state, RequestMsg::VarCardClosed);
+        assert!(state.tabs.active_tab().var_card.is_none());
         drop(state);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -2204,7 +2348,94 @@ mod body_var_card_tests {
         let _ = handle(&mut state, RequestMsg::BodyEdited(Editor::MouseRelease));
         open_card(&mut state, at);
         let _ = handle(&mut state, RequestMsg::BodyEdited(Editor::Backspace));
-        assert!(state.tabs.active_tab().body_var_card.is_none());
+        assert!(state.tabs.active_tab().var_card.is_none());
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod header_var_card_tests {
+    use super::*;
+    use crate::state::tabs::{SuggestField, VarCardAnchor};
+
+    fn setup(key: &str, value: &str) -> (AppState, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("rustman-headercard-{}", uuid::Uuid::new_v4()));
+        let (mut state, _) = crate::app::boot::init_at(dir.clone());
+        let _ = handle(&mut state, RequestMsg::HeaderAdded);
+        let last = state.tabs.active_tab().headers.len() - 1;
+        let _ = handle(&mut state, RequestMsg::HeaderKeyChanged(last, key.into()));
+        let _ = handle(
+            &mut state,
+            RequestMsg::HeaderValueChanged(last, value.into()),
+        );
+        state.tabs.active_tab_mut().header_suggest = None;
+        (state, dir)
+    }
+
+    fn row(state: &AppState) -> usize {
+        state.tabs.active_tab().headers.len() - 1
+    }
+
+    #[test]
+    fn clicking_a_finished_variable_pins_its_card_instead_of_the_list() {
+        let (mut state, dir) = setup("X-Test", "Bearer {{auth}}");
+        let r = row(&state);
+        let _ = handle(
+            &mut state,
+            RequestMsg::HeaderSuggestOpened(r, SuggestField::Value),
+        );
+        let tab = state.tabs.active_tab();
+        assert!(tab.header_suggest.is_none());
+        let card = tab.var_card.clone().unwrap();
+        assert_eq!(card.names, ["auth"]);
+        assert_eq!(card.anchor, VarCardAnchor::Header(r, SuggestField::Value));
+        assert!(card.pinned && !card.mask_all);
+
+        // Typing edits the cell: the card gets out of the way.
+        let _ = handle(
+            &mut state,
+            RequestMsg::HeaderValueChanged(r, "Bearer {{auth}} {{".into()),
+        );
+        assert!(state.tabs.active_tab().var_card.is_none());
+        state.tabs.active_tab_mut().header_suggest = None;
+        let _ = handle(
+            &mut state,
+            RequestMsg::HeaderSuggestOpened(r, SuggestField::Value),
+        );
+        let tab = state.tabs.active_tab();
+        assert!(tab.var_card.is_none(), "an open {{{{ is still autocomplete");
+        assert!(tab.header_suggest.is_some());
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn hover_opens_after_the_delay_and_the_gap_to_the_card_is_forgiven() {
+        let (mut state, dir) = setup("Authorization", "{{value}}");
+        let (r, f) = (row(&state), SuggestField::Value);
+        let _ = handle(&mut state, RequestMsg::HeaderVarHovered(r, f, true));
+        assert!(state.tabs.active_tab().var_card.is_none());
+        let _ = handle(&mut state, RequestMsg::HeaderVarDue(r, f));
+        let card = state.tabs.active_tab().var_card.clone().unwrap();
+        assert!(!card.pinned);
+        assert!(card.mask_all, "a sensitive header's value starts masked");
+
+        // Out of the cell and onto the card.
+        let _ = handle(&mut state, RequestMsg::HeaderVarHovered(r, f, false));
+        let _ = handle(&mut state, RequestMsg::VarCardHover(true));
+        let _ = handle(&mut state, RequestMsg::VarCardLeaveDue);
+        assert!(state.tabs.active_tab().var_card.is_some());
+        // Off the card and away.
+        let _ = handle(&mut state, RequestMsg::VarCardHover(false));
+        let _ = handle(&mut state, RequestMsg::VarCardLeaveDue);
+        assert!(state.tabs.active_tab().var_card.is_none());
+
+        // Leaving before the delay ran out opens nothing.
+        let _ = handle(&mut state, RequestMsg::HeaderVarHovered(r, f, true));
+        let _ = handle(&mut state, RequestMsg::HeaderVarHovered(r, f, false));
+        let _ = handle(&mut state, RequestMsg::HeaderVarDue(r, f));
+        assert!(state.tabs.active_tab().var_card.is_none());
         drop(state);
         let _ = std::fs::remove_dir_all(dir);
     }

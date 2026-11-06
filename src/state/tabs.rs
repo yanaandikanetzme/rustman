@@ -127,16 +127,27 @@ pub struct BodyHover {
     pub point: iced::Point,
 }
 
-/// Open variable card: `anchor` is the token's rectangle in the editor's
-/// viewport pixels. It closes when the mouse leaves unless clicked (`pinned`).
+/// Where a variable card hangs from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum VarCardAnchor {
+    /// A body token's rectangle, in the editor's viewport pixels.
+    Body(iced::Rectangle),
+    /// A Headers table cell.
+    Header(usize, SuggestField),
+}
+
+/// Open variable card. It closes when the mouse leaves unless clicked
+/// (`pinned`). `mask_all`: the cell is a sensitive header's value, so every
+/// variable in it starts masked whatever its name.
 #[derive(Debug, Clone, PartialEq)]
-pub struct BodyVarCard {
-    pub name: String,
-    pub anchor: iced::Rectangle,
+pub struct VarCard {
+    pub names: Vec<String>,
+    pub anchor: VarCardAnchor,
+    pub mask_all: bool,
     pub over_card: bool,
     pub pinned: bool,
     pub revealed: bool,
-    pub copied: bool,
+    pub copied: Option<String>,
 }
 
 /// The body editor's `{{` autocomplete: its rows and the token around the
@@ -209,10 +220,12 @@ pub struct RequestTabState {
     /// `{{variable}}` under the mouse in the body editor, for its hover card.
     pub body_hover: Option<BodyHover>,
     /// The variable card the mouse can reach, opened after a hover delay.
-    pub body_var_card: Option<BodyVarCard>,
+    pub var_card: Option<VarCard>,
     /// A selection drag is running in the body editor: no card may open
     /// under the mouse and take its events.
     pub body_dragging: bool,
+    /// The Headers cell under the mouse.
+    pub header_hover: Option<(usize, SuggestField)>,
     /// `{{variable}}` tokens of the body, marked over the editor. Refreshed on
     /// every body change so the view never copies the buffer.
     pub body_vars: Vec<crate::services::variables::VarToken>,
@@ -370,8 +383,9 @@ impl RequestTabState {
             url_completion_selected: 0,
             header_suggest: None,
             body_hover: None,
-            body_var_card: None,
+            var_card: None,
             body_dragging: false,
+            header_hover: None,
             body_vars: Vec::new(),
             body_completion: None,
             headers: Vec::new(),
@@ -826,7 +840,7 @@ impl RequestTabState {
         self.body_editor = ed;
         self.refresh_body_vars();
         self.body_completion = None;
-        self.body_var_card = None;
+        self.var_card = None;
     }
 
     /// Replace the whole body through the editor's edit history (select-all +
@@ -851,7 +865,7 @@ impl RequestTabState {
             .update(&iced_code_editor::Message::Paste(text));
         self.refresh_body_vars();
         self.body_completion = None;
-        self.body_var_card = None;
+        self.var_card = None;
         task
     }
 

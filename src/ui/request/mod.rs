@@ -11,4 +11,5 @@ pub mod tabs;
 pub mod url_bar;
 mod url_highlight;
 mod url_variables;
+pub(crate) mod var_card;
 pub mod websocket;

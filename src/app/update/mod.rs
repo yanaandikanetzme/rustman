@@ -80,12 +80,15 @@ pub(crate) fn update(state: &mut AppState, message: Message) -> Task<Message> {
                         | crate::message::RequestMsg::BodyHovered(_)
                         | crate::message::RequestMsg::BodyCompletionMoved(_)
                         | crate::message::RequestMsg::BodyCompletionClosed
-                        | crate::message::RequestMsg::BodyVarCardDue(_)
-                        | crate::message::RequestMsg::BodyVarCardHover(_)
-                        | crate::message::RequestMsg::BodyVarCardPinned
-                        | crate::message::RequestMsg::BodyVarCardRevealToggled
-                        | crate::message::RequestMsg::BodyVarCardCopied
-                        | crate::message::RequestMsg::BodyVarCardClosed
+                        | crate::message::RequestMsg::VarCardDue(_)
+                        | crate::message::RequestMsg::VarCardHover(_)
+                        | crate::message::RequestMsg::VarCardPinned
+                        | crate::message::RequestMsg::VarCardRevealToggled
+                        | crate::message::RequestMsg::VarCardCopied(_)
+                        | crate::message::RequestMsg::VarCardClosed
+                        | crate::message::RequestMsg::HeaderVarHovered(..)
+                        | crate::message::RequestMsg::HeaderVarDue(..)
+                        | crate::message::RequestMsg::VarCardLeaveDue
                         | crate::message::RequestMsg::AutoHeadersToggled
                         | crate::message::RequestMsg::UrlCompletionMoved(_)
                         | crate::message::RequestMsg::UrlVariableValueChanged(_)
@@ -234,12 +237,15 @@ pub(crate) fn marks_session_dirty(message: &Message) -> bool {
                 | crate::message::RequestMsg::BodyHovered(_)
                 | crate::message::RequestMsg::BodyCompletionMoved(_)
                 | crate::message::RequestMsg::BodyCompletionClosed
-                | crate::message::RequestMsg::BodyVarCardDue(_)
-                | crate::message::RequestMsg::BodyVarCardHover(_)
-                | crate::message::RequestMsg::BodyVarCardPinned
-                | crate::message::RequestMsg::BodyVarCardRevealToggled
-                | crate::message::RequestMsg::BodyVarCardCopied
-                | crate::message::RequestMsg::BodyVarCardClosed
+                | crate::message::RequestMsg::VarCardDue(_)
+                | crate::message::RequestMsg::VarCardHover(_)
+                | crate::message::RequestMsg::VarCardPinned
+                | crate::message::RequestMsg::VarCardRevealToggled
+                | crate::message::RequestMsg::VarCardCopied(_)
+                | crate::message::RequestMsg::VarCardClosed
+                | crate::message::RequestMsg::HeaderVarHovered(..)
+                | crate::message::RequestMsg::HeaderVarDue(..)
+                | crate::message::RequestMsg::VarCardLeaveDue
                 | crate::message::RequestMsg::UrlCompletionMoved(_)
                 | crate::message::RequestMsg::UrlVariableValueChanged(_)
                 | crate::message::RequestMsg::UrlVariableEnvironmentSelected(_)

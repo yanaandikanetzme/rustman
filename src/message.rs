@@ -203,17 +203,23 @@ pub enum RequestMsg {
     /// Escape or a click elsewhere closed the list.
     BodyCompletionClosed,
     /// The hover delay of a body `{{variable}}` ran out.
-    BodyVarCardDue(String),
+    VarCardDue(String),
+    /// The mouse entered (`true`) or left a Headers cell.
+    HeaderVarHovered(usize, crate::state::tabs::SuggestField, bool),
+    /// The hover delay of a Headers cell with variables ran out.
+    HeaderVarDue(usize, crate::state::tabs::SuggestField),
+    /// The grace period after the mouse left a Headers cell or its card.
+    VarCardLeaveDue,
     /// The mouse entered (`true`) or left the variable card.
-    BodyVarCardHover(bool),
+    VarCardHover(bool),
     /// A click inside the card keeps it open until an outside click.
-    BodyVarCardPinned,
+    VarCardPinned,
     /// The eye button of a secret-looking variable.
-    BodyVarCardRevealToggled,
-    /// Copy the variable's full value.
-    BodyVarCardCopied,
+    VarCardRevealToggled,
+    /// Copy this variable's full value.
+    VarCardCopied(String),
     /// Escape or an outside click closed the card.
-    BodyVarCardClosed,
+    VarCardClosed,
     HeaderAdded,
     HeaderRemoved(usize),
     /// A Headers cell was clicked: open its autocomplete list.
