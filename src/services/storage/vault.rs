@@ -1,7 +1,7 @@
 //! Authenticated encryption for local SQLite payloads. IDs/names remain metadata.
 use aes_gcm::{
     Aes256Gcm, Nonce,
-    aead::{Aead, AeadCore, KeyInit, OsRng, Payload},
+    aead::{Aead, Generate, KeyInit, Payload},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD_NO_PAD};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -58,7 +58,7 @@ fn aad(table: &str, column: &str, id: &str) -> Vec<u8> {
 
 fn encrypt(key: &[u8], aad: &[u8], value: &str) -> Result<String, String> {
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| "Invalid database key")?;
-    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    let nonce = Nonce::generate();
     let ciphertext = cipher
         .encrypt(
             &nonce,
@@ -84,9 +84,10 @@ fn decrypt(key: &[u8], aad: &[u8], value: &str) -> Result<String, String> {
         return Err("Invalid encrypted database payload".into());
     }
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| "Invalid database key")?;
+    let nonce = Nonce::try_from(&bytes[..12]).map_err(|_| "Invalid encrypted database payload")?;
     let plaintext = cipher
         .decrypt(
-            Nonce::from_slice(&bytes[..12]),
+            &nonce,
             Payload {
                 msg: &bytes[12..],
                 aad,
@@ -246,9 +247,21 @@ pub fn migrate(conn: &Connection) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Sealed by aes-gcm 0.10 before the 0.11 upgrade: payloads already on
+    /// disk have to keep opening after any crypto dependency bump.
+    #[test]
+    fn a_payload_sealed_by_an_older_release_still_opens() {
+        let sealed = "rustman:aes256gcm:v1:nAT2wzpLSqCEfdaB8OuuDGQtBEDqiM2ud16ijDL/j7m0d8E7h3ml9SdLVcdZvAsdKY95Iws";
+        let context = aad("requests", "body", "fixture-id");
+        assert_eq!(
+            decrypt(&[7u8; 32], &context, sealed).unwrap(),
+            "rustman fixture plaintext"
+        );
+    }
+
     #[test]
     fn authenticated_roundtrip_nonce_and_context() {
-        let key = Aes256Gcm::generate_key(OsRng);
+        let key = aes_gcm::aead::Key::<Aes256Gcm>::generate();
         let context = aad("environment", "variables", "一");
         let value = "synthetic-secret-ไทย-한국-一";
         let first = encrypt(&key, &context, value).unwrap();

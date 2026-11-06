@@ -31,4 +31,8 @@ pub enum ExampleMsg {
     Close,
     Discard,
     Delete,
+    /// Right-click Delete on a sidebar row: asks first.
+    DeleteAsked(String),
+    DeleteCancelled,
+    DeleteConfirmed,
 }

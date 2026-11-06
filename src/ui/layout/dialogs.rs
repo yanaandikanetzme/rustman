@@ -14,14 +14,28 @@ use crate::{
 
 pub(super) fn collection_delete_dialog(state: &AppState) -> Element<'_, Message> {
     use crate::message::SidebarMsg;
-    let id = state.sidebar.collection_delete_id.as_deref().unwrap_or("");
-    let name = state
-        .collections
+    let ids = &state.sidebar.collection_delete_ids;
+    let names: Vec<&str> = ids
         .iter()
-        .find(|c| c.id == id)
+        .filter_map(|id| state.collections.iter().find(|c| &c.id == id))
         .map(|c| c.name.as_str())
-        .unwrap_or("Collection");
-    let count = state.requests.get(id).map_or(0, Vec::len);
+        .collect();
+    let many = ids.len() > 1;
+    let count: usize = ids
+        .iter()
+        .map(|id| state.requests.get(id).map_or(0, Vec::len))
+        .sum();
+    let title = if many {
+        format!("Delete {} collections?", ids.len())
+    } else {
+        format!(
+            "Delete \"{}\"?",
+            crate::services::format::head_capped(
+                names.first().copied().unwrap_or("Collection"),
+                180
+            )
+        )
+    };
     let allowed = state.sidebar.collection_delete_text == "delete";
     let input = text_input("Type delete", &state.sidebar.collection_delete_text)
         .id("collection-delete-confirm")
@@ -32,13 +46,10 @@ pub(super) fn collection_delete_dialog(state: &AppState) -> Element<'_, Message>
         .on_submit(Message::Sidebar(SidebarMsg::CollectionDeleteConfirmed));
     let mut content = column![
         row![
-            text(format!(
-                "Delete \"{}\"?",
-                crate::services::format::head_capped(name, 180)
-            ))
-            .size(14)
-            .font(crate::ui::theme::UI_FONT_MEDIUM)
-            .color(Palette::text()),
+            text(title)
+                .size(14)
+                .font(crate::ui::theme::UI_FONT_MEDIUM)
+                .color(Palette::text()),
             Space::new().width(Length::Fill),
             crate::ui::components::atoms::compact_icon_button(
                 icons::close(),
@@ -55,15 +66,33 @@ pub(super) fn collection_delete_dialog(state: &AppState) -> Element<'_, Message>
         .color(Palette::text_muted()),
     ]
     .spacing(10);
+    if many {
+        // Name what goes, so a stray Shift-range is caught before deleting.
+        const SHOWN: usize = 6;
+        let mut list = names
+            .iter()
+            .take(SHOWN)
+            .map(|n| format!("• {}", crate::services::format::head_capped(n, 80)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if names.len() > SHOWN {
+            list.push_str(&format!("\n… and {} more", names.len() - SHOWN));
+        }
+        content = content.push(text(list).size(12).color(Palette::text()));
+    }
     // Layer 1 (Postman-style): say what goes, then a plain Delete. Layer 2:
     // type "delete". The handler enforces both, not just this view.
     if !state.sidebar.collection_delete_typing {
         content = content.push(
-            text(
+            text(if many {
+                "Deleting these removes every request, folder and saved example in \
+                 them from this workspace. Local drafts of their requests are kept as \
+                 orphans. This can't be undone."
+            } else {
                 "Deleting this removes every request, folder and saved example in it \
                  from this workspace. Local drafts of its requests are kept as \
-                 orphans. This can't be undone.",
-            )
+                 orphans. This can't be undone."
+            })
             .size(12)
             .color(Palette::text()),
         );
@@ -102,26 +131,33 @@ pub(super) fn collection_delete_dialog(state: &AppState) -> Element<'_, Message>
             Space::new().width(Length::Fill),
             crate::ui::components::atoms::Button::new("Cancel")
                 .on_press(Message::Sidebar(SidebarMsg::CollectionDeleteCancelled)),
-            button(text("Delete Collection").size(12))
-                .on_press_maybe(
-                    allowed.then_some(Message::Sidebar(SidebarMsg::CollectionDeleteConfirmed))
-                )
-                .style(move |theme, status| {
-                    if matches!(status, button::Status::Disabled) {
-                        button::Style {
-                            background: Some(Palette::error_soft().into()),
-                            text_color: Palette::text_subtle(),
-                            border: Border {
-                                radius: 6.0.into(),
-                                ..Default::default()
-                            },
-                            ..Default::default()
-                        }
-                    } else {
-                        danger_btn_style(theme, status)
-                    }
+            button(
+                text(if many {
+                    "Delete Collections"
+                } else {
+                    "Delete Collection"
                 })
-                .padding([5, 12]),
+                .size(12),
+            )
+            .on_press_maybe(
+                allowed.then_some(Message::Sidebar(SidebarMsg::CollectionDeleteConfirmed))
+            )
+            .style(move |theme, status| {
+                if matches!(status, button::Status::Disabled) {
+                    button::Style {
+                        background: Some(Palette::error_soft().into()),
+                        text_color: Palette::text_subtle(),
+                        border: Border {
+                            radius: 6.0.into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }
+                } else {
+                    danger_btn_style(theme, status)
+                }
+            })
+            .padding([5, 12]),
         ]
         .spacing(8)
         .align_y(iced::Alignment::Center),
@@ -144,6 +180,42 @@ pub(super) fn request_delete_dialog(state: &AppState) -> Element<'_, Message> {
         .and_then(|(id, col)| state.requests.get(col)?.iter().find(|r| &r.id == id))
         .map(|r| r.name.as_str())
         .unwrap_or("request");
+    delete_confirm_dialog(
+        name,
+        Message::Sidebar(SidebarMsg::RequestDeleteCancelled),
+        Message::Sidebar(SidebarMsg::RequestDeleteConfirmed),
+    )
+}
+
+/// The same confirm for an example deleted from the sidebar.
+pub(super) fn example_delete_dialog(state: &AppState) -> Element<'_, Message> {
+    use crate::message::example::ExampleMsg;
+    let name = state
+        .examples
+        .delete_asked
+        .as_ref()
+        .and_then(|id| {
+            state
+                .examples
+                .items
+                .values()
+                .flatten()
+                .find(|e| &e.id == id)
+        })
+        .map(|e| e.name.as_str())
+        .unwrap_or("example");
+    delete_confirm_dialog(
+        name,
+        Message::Example(ExampleMsg::DeleteCancelled),
+        Message::Example(ExampleMsg::DeleteConfirmed),
+    )
+}
+
+fn delete_confirm_dialog<'a>(
+    name: &str,
+    cancel: Message,
+    confirm: Message,
+) -> Element<'a, Message> {
     let name = crate::services::format::head_capped(name, 180);
     let content = column![
         row![
@@ -155,7 +227,7 @@ pub(super) fn request_delete_dialog(state: &AppState) -> Element<'_, Message> {
             crate::ui::components::atoms::compact_icon_button(
                 icons::close(),
                 "Cancel deletion",
-                Message::Sidebar(SidebarMsg::RequestDeleteCancelled),
+                cancel.clone(),
                 22.0
             )
         ]
@@ -172,10 +244,9 @@ pub(super) fn request_delete_dialog(state: &AppState) -> Element<'_, Message> {
         ],
         row![
             Space::new().width(Length::Fill),
-            crate::ui::components::atoms::Button::new("Cancel")
-                .on_press(Message::Sidebar(SidebarMsg::RequestDeleteCancelled)),
+            crate::ui::components::atoms::Button::new("Cancel").on_press(cancel),
             button(text("Delete").size(12))
-                .on_press(Message::Sidebar(SidebarMsg::RequestDeleteConfirmed))
+                .on_press(confirm)
                 .style(danger_btn_style)
                 .padding([5, 12]),
         ]

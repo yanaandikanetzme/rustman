@@ -63,6 +63,8 @@ pub(super) fn handle(state: &mut AppState, msg: AppMsg) -> Task<Message> {
                 }
                 tab.is_loading = false;
                 tab.parsed_json = None;
+                tab.json_open.clear();
+                tab.revealed_response.clear();
                 tab.body_lang = None;
                 tab.body_preview = None;
                 tab.viewer_processing = true;
@@ -166,6 +168,13 @@ pub(super) fn handle(state: &mut AppState, msg: AppMsg) -> Task<Message> {
                     }
                 }
 
+                crate::app::console::record_response(
+                    state,
+                    &tab_id,
+                    &result.response,
+                    &test_logs,
+                    test_error.as_deref(),
+                );
                 if let Some(t) = state.tabs.tabs.iter_mut().find(|t| t.id == tab_id) {
                     t.test_results = test_results;
                     t.script_error = test_error;
@@ -242,10 +251,7 @@ pub(super) fn handle(state: &mut AppState, msg: AppMsg) -> Task<Message> {
                     if let Some(t) = state.tabs.tabs.iter_mut().find(|t| t.id == tab_id) {
                         t.parsed_json = Some(cached_clone);
                         t.set_viewer_content(&display, true);
-                        t.html_fallback_text = t
-                            .response
-                            .as_ref()
-                            .and_then(crate::services::format::html_preview_text);
+                        t.refresh_html_preview();
                         t.viewer_processing = false;
                         t.jobs.cancel(JobKind::Parse);
                     }
@@ -309,10 +315,7 @@ pub(super) fn handle(state: &mut AppState, msg: AppMsg) -> Task<Message> {
                     }
                     tab.parsed_json = parsed_json.map(|b| *b);
                     tab.set_viewer_content(&content_text, is_json);
-                    tab.html_fallback_text = tab
-                        .response
-                        .as_ref()
-                        .and_then(crate::services::format::html_preview_text);
+                    tab.refresh_html_preview();
                     tab.viewer_processing = false;
                 }
             }

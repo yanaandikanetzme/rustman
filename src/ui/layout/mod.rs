@@ -11,7 +11,11 @@ use crate::{
 
 mod collections_modal;
 mod console;
+
+/// Thickness of the drag handle above the Console.
+const CONSOLE_HANDLE: f32 = 8.0;
 mod dialogs;
+mod docs;
 pub mod header;
 mod status_bar;
 mod style;
@@ -37,7 +41,9 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
     // the menu over — the nested message is published last and wins.
     // The snippet panel belongs to the request view; the environment editor
     // and the example editor keep the full width.
-    let request_view = state.sidebar.environment_page.is_none() && state.examples.editor.is_none();
+    let request_view = state.sidebar.environment_page.is_none()
+        && state.examples.editor.is_none()
+        && state.collection_docs.is_none();
     let mut columns = row![left_panel(state), main_area(state)].height(Length::Fill);
     if request_view && state.snippet_open {
         columns = columns.push(crate::ui::snippet_panel::view(state));
@@ -49,7 +55,10 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
     let mut workspace = column![header::view(state), shell].height(Length::Fill);
     if state.console_open {
         workspace = workspace
-            .push(iced::widget::rule::horizontal(1).style(crate::ui::styles::divider))
+            .push(crate::ui::widgets::height_splitter::height_splitter(
+                state.console_height,
+                |height| Message::Layout(crate::message::LayoutMsg::ConsoleResized(height)),
+            ))
             .push(console::view(state));
     }
     let main: Element<Message> = workspace
@@ -81,7 +90,7 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
     } else {
         root
     };
-    if state.sidebar.collection_delete_id.is_some() {
+    if !state.sidebar.collection_delete_ids.is_empty() {
         iced::widget::stack![
             root,
             iced::widget::opaque(dialogs::collection_delete_dialog(state))
@@ -91,6 +100,12 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
         iced::widget::stack![
             root,
             iced::widget::opaque(dialogs::request_delete_dialog(state))
+        ]
+        .into()
+    } else if state.examples.delete_asked.is_some() {
+        iced::widget::stack![
+            root,
+            iced::widget::opaque(dialogs::example_delete_dialog(state))
         ]
         .into()
     } else if state.palette_open {
@@ -246,6 +261,18 @@ fn main_area(state: &AppState) -> Element<'_, Message> {
     {
         return crate::ui::environment_workspace::view(state, env);
     }
+    if let Some(docs) = &state.collection_docs {
+        return column![
+            tab_bar::multi_tab_bar(state),
+            container(docs::view(state, docs))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(crate::ui::styles::content_surface)
+        ]
+            .height(Length::Fill)
+            .width(Length::Fill)
+            .into();
+    }
     if let Some(editor) = &state.examples.editor {
         return column![
             tab_bar::multi_tab_bar(state),
@@ -279,11 +306,16 @@ fn main_area(state: &AppState) -> Element<'_, Message> {
         RequestTab::Params => request::params::view(active_tab, active_env),
         RequestTab::Headers => request::headers::view(
             active_tab,
+            active_env,
             state.show_auto_headers,
             state.sidebar.context_menu.as_deref(),
         ),
-        RequestTab::Body => request::body::view(active_tab, state.sidebar.context_menu.as_deref()),
-        RequestTab::Auth => request::auth::view(active_tab),
+        RequestTab::Body => request::body::view(
+            active_tab,
+            active_env,
+            state.sidebar.context_menu.as_deref(),
+        ),
+        RequestTab::Auth => request::auth::view(active_tab, active_env),
         RequestTab::Scripts => request::scripts::view(active_tab),
         // No longer a real tab (timeout moved to global Settings) — only
         // reachable via an old persisted session; fall back to Params.
@@ -345,7 +377,12 @@ fn main_area(state: &AppState) -> Element<'_, Message> {
                 state.panel_split,
                 crate::ui::widgets::panel_splitter::Orientation::Horizontal,
                 splitter,
-            ),
+            )
+            .reserve_below(if state.console_open {
+                state.console_height + CONSOLE_HANDLE
+            } else {
+                0.0
+            }),
             response_panel.height(Length::FillPortion(resp_split)),
         ]
         .spacing(0)

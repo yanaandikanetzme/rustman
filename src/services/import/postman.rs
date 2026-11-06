@@ -88,6 +88,8 @@ struct PostmanHeader {
     value: String,
     #[serde(default)]
     disabled: bool,
+    #[serde(default)]
+    description: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -358,6 +360,24 @@ fn script_source(events: &[serde_json::Value], listen: &str) -> String {
     out
 }
 
+/// The runnable source of a script [`script_source`] kept as comments.
+/// `None` when `text` is not such a script.
+pub fn enable_imported_script(text: &str) -> Option<String> {
+    let (first, rest) = text.split_once('\n')?;
+    if !first.starts_with(SCRIPT_MARKER) {
+        return None;
+    }
+    let lines: Vec<&str> = rest
+        .lines()
+        .map(|l| {
+            l.strip_prefix("// ")
+                .or_else(|| l.strip_prefix("//"))
+                .unwrap_or(l)
+        })
+        .collect();
+    Some(lines.join("\n"))
+}
+
 /// Convert a Postman item list into (direct request leaves, child groups)
 /// sharing one manual ordering sequence. `collection_id` is the root
 /// collection every leaf request belongs to, regardless of nesting depth.
@@ -432,6 +452,7 @@ fn convert_request(collection_id: &str, item: &PostmanRequestItem) -> SavedReque
                     key: p.key.clone(),
                     value: p.value.clone().unwrap_or_default(),
                     enabled: !p.disabled,
+                    description: String::new(),
                 })
                 .collect();
             // The query is kept in `params`; strip it from the URL so it isn't
@@ -455,6 +476,7 @@ fn convert_request(collection_id: &str, item: &PostmanRequestItem) -> SavedReque
             key: h.key.clone(),
             value: h.value.clone(),
             enabled: !h.disabled,
+            description: description_text(h.description.as_ref()),
         })
         .collect();
 
@@ -610,7 +632,13 @@ fn export_request(req: &SavedRequest) -> serde_json::Value {
     let headers: Vec<Value> = req
         .headers
         .iter()
-        .map(|h| json!({ "key": h.key, "value": h.value, "disabled": !h.enabled }))
+        .map(|h| {
+            let mut v = json!({ "key": h.key, "value": h.value, "disabled": !h.enabled });
+            if !h.description.is_empty() {
+                v["description"] = json!(h.description);
+            }
+            v
+        })
         .collect();
 
     let body: Value = match req.body_type {
@@ -798,5 +826,26 @@ mod tests {
         );
         let out: serde_json::Value = serde_json::from_str(&export(&col)).unwrap();
         assert_eq!(out["item"][1]["request"]["body"]["mode"], "urlencoded");
+    }
+}
+
+#[cfg(test)]
+mod enable_script_tests {
+    use super::*;
+
+    #[test]
+    fn an_imported_script_round_trips_to_its_source() {
+        let events = [serde_json::json!({
+            "listen": "test",
+            "script": {"exec": ["var d = JSON.parse(responseBody);", "", "// note"]},
+        })];
+        let kept = script_source(&events, "test");
+        assert!(kept.starts_with(SCRIPT_MARKER));
+        assert_eq!(
+            enable_imported_script(&kept).unwrap(),
+            "var d = JSON.parse(responseBody);\n\n// note"
+        );
+        assert!(enable_imported_script("var a = 1;\nvar b = 2;").is_none());
+        assert!(enable_imported_script("").is_none());
     }
 }

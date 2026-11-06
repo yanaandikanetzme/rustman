@@ -46,6 +46,16 @@ pub enum Message {
 pub enum SidebarMsg {
     PanelSelected(SidebarPanel),
     RequestOpened(SavedRequest),
+    /// Leave the collection documentation page.
+    DocsClosed,
+    /// Into the complete documentation (`true`) or back to the Overview.
+    DocsFullToggled(bool),
+    DocsLangSet(crate::services::snippet::Lang),
+    /// A code block's "View more" or an example's Headers tab, by key.
+    DocsToggled(String),
+    /// The example shown for a request id.
+    DocsExampleChosen(String, usize),
+    DocsCopied(String),
     NewCollection,
     RenameCollection {
         id: String,
@@ -63,6 +73,12 @@ pub enum SidebarMsg {
         name: String,
     },
     DeleteCollection(String),
+    /// Ask before deleting every Shift/Ctrl-selected collection.
+    DeleteSelectedCollections,
+    /// Drop the Shift/Ctrl collection selection (Escape).
+    CollectionSelectionCleared,
+    /// Held keyboard modifiers changed (drives Shift/Ctrl-click selection).
+    ModifiersChanged(iced::keyboard::Modifiers),
     DeleteRequest {
         id: String,
         collection_id: String,
@@ -168,6 +184,12 @@ pub enum RequestMsg {
     /// the handler decides per action (see `handle`), which is what lets
     /// huge pastes route to import without ever entering the widget.
     UrlEdited(iced::widget::text_editor::Action),
+    /// An edit in a Headers/Params cell's or an Auth field's editor.
+    FieldEdited(
+        usize,
+        crate::state::tabs::SuggestField,
+        iced::widget::text_editor::Action,
+    ),
     UrlHovered(Option<iced::Point>),
     UrlCompletionMoved(i32),
     UrlCompletionSelected(Option<String>),
@@ -184,8 +206,48 @@ pub enum RequestMsg {
     HeaderToggled(usize),
     HeaderKeyChanged(usize, String),
     HeaderValueChanged(usize, String),
+    HeaderDescriptionChanged(usize, String),
+    /// Mouse over the body editor (`None` = left it): resolves the
+    /// `{{variable}}` under it for the hover card.
+    BodyHovered(Option<iced::Point>),
+    /// Arrow keys in the body editor's `{{` list (`true` = down).
+    BodyCompletionMoved(bool),
+    /// Enter in that list: apply the highlighted variable.
+    BodyCompletionAccepted,
+    /// A variable was clicked: the `{{name}}` to insert.
+    BodyCompletionPicked(String),
+    /// Escape or a click elsewhere closed the list.
+    BodyCompletionClosed,
+    /// The hover delay of a body `{{variable}}` ran out.
+    VarCardDue(String),
+    /// The mouse entered (`true`) or left a Headers cell.
+    HeaderVarHovered(usize, crate::state::tabs::SuggestField, bool),
+    /// The hover delay of a Headers cell with variables ran out.
+    HeaderVarDue(usize, crate::state::tabs::SuggestField),
+    /// The grace period after the mouse left a Headers cell or its card.
+    VarCardLeaveDue,
+    /// The mouse entered (`true`) or left the variable card.
+    VarCardHover(bool),
+    /// A click inside the card keeps it open until an outside click.
+    VarCardPinned,
+    /// The eye button of a secret-looking variable.
+    VarCardRevealToggled,
+    /// Copy this variable's full value.
+    VarCardCopied(String),
+    /// Escape or an outside click closed the card.
+    VarCardClosed,
     HeaderAdded,
     HeaderRemoved(usize),
+    /// A Headers cell was clicked: open its autocomplete list.
+    HeaderSuggestOpened(usize, crate::state::tabs::SuggestField),
+    /// Escape or a click elsewhere closed the list.
+    HeaderSuggestClosed,
+    /// Arrow keys in the open list (`true` = down).
+    HeaderSuggestMoved(bool),
+    /// Enter in the open list: apply the highlighted suggestion.
+    HeaderSuggestAccepted,
+    /// A suggestion was clicked: the cell's new content.
+    HeaderSuggestionPicked(usize, crate::state::tabs::SuggestField, String),
     HeadersBulkToggle,
     HeadersBulkEdited(iced::widget::text_editor::Action),
     /// Set (or with "None" remove) the Content-Type header from the
@@ -249,6 +311,18 @@ pub enum RequestMsg {
     FormFieldPickFile(usize), // open file dialog for row index
     FormFieldFilePicked(usize, String, String), // index, filename, base64_data
     // Scripts
+    /// Before request / After response on the Scripts rail.
+    ScriptPhaseSelected(crate::state::tabs::ScriptPhase),
+    /// Run the imported script kept as comments: uncomment it.
+    ScriptImportEnabled,
+    /// Arrow keys in the script autocomplete (`true` = down).
+    ScriptCompletionMoved(bool),
+    /// Enter in that list: apply the highlighted item.
+    ScriptCompletionAccepted,
+    /// An item was clicked: the text to insert.
+    ScriptCompletionPicked(String),
+    /// Escape or a click elsewhere closed the list.
+    ScriptCompletionClosed,
     PreRequestScriptEdited(iced_code_editor::Message),
     TestScriptEdited(iced_code_editor::Message),
     // WebSocket
@@ -318,6 +392,8 @@ pub enum RequestTab {
 pub enum ResponseMsg {
     TabSelected(ResponseTab),
     CopyBody,
+    /// Forget this tab's response, back to the empty state.
+    ClearResponse,
     /// Save the raw bytes of the current binary response to a file.
     SaveBody,
     /// Result of `SaveBody`; `Ok` carries the written path.
@@ -335,8 +411,12 @@ pub enum ResponseMsg {
     ViewerWrapToggled,
     /// Body format picked in the response toolbar (JSON, XML, … Raw).
     BodyLangSelected(crate::state::tabs::BodyLang),
-    /// Preview (readable rendered HTML) on/off.
+    /// Preview (rendered HTML / JSON table) on/off.
     PreviewToggled,
+    /// Expand or collapse a row of the JSON preview table (row path).
+    JsonNodeToggled(String),
+    /// Show or hide one masked Headers/Cookies value (`h:3`, `c:0`).
+    RevealToggled(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
@@ -354,17 +434,21 @@ pub enum ResponseTab {
 pub enum WsMsg {
     TextFrame {
         tab_id: String,
+        connection_id: uuid::Uuid,
         text: String,
     },
     Disconnected {
         tab_id: String,
+        connection_id: uuid::Uuid,
     },
     Error {
         tab_id: String,
+        connection_id: uuid::Uuid,
         error: String,
     },
     Handshake {
         tab_id: String,
+        connection_id: uuid::Uuid,
         sender: mpsc::Sender<String>,
     },
 }
@@ -560,6 +644,16 @@ pub enum ImportMsg {
 #[derive(Debug, Clone)]
 pub enum LayoutMsg {
     ConsoleToggled,
+    /// The Console's top edge was dragged: its new height.
+    ConsoleResized(f32),
+    /// A pick in the Console's filter menu.
+    ConsoleFilterSet(crate::state::console::ConsoleFilter),
+    /// Empty the Console.
+    ConsoleCleared,
+    /// Copy the whole Console as text.
+    ConsoleCopied,
+    /// Open or close a Console row or section.
+    ConsoleRowToggled(String),
     ZoomIn,
     ZoomOut,
     ZoomReset,

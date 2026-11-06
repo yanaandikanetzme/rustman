@@ -11,7 +11,11 @@ use crate::{
 };
 
 /// `open_menu`: the app's open context-menu key (form rows' Text/File menu).
-pub fn view<'a>(tab: &'a RequestTabState, open_menu: Option<&str>) -> Element<'a, Message> {
+pub fn view<'a>(
+    tab: &'a RequestTabState,
+    env: Option<&'a crate::domain::environment::AppEnvironment>,
+    open_menu: Option<&str>,
+) -> Element<'a, Message> {
     let type_tabs_row = body_toolbar(tab);
 
     let body_panel: Element<Message> = match tab.body_type {
@@ -30,10 +34,13 @@ pub fn view<'a>(tab: &'a RequestTabState, open_menu: Option<&str>) -> Element<'a
         .padding([24, 8])
         .into(),
 
-        BodyType::Json | BodyType::Text => tab
-            .body_editor
-            .view()
-            .map(|m| Message::Request(RequestMsg::BodyEdited(m))),
+        BodyType::Json | BodyType::Text => variable_hover(
+            tab.body_editor
+                .view()
+                .map(|m| Message::Request(RequestMsg::BodyEdited(m))),
+            tab,
+            env,
+        ),
 
         BodyType::FormData => form_view(tab, open_menu, true),
         BodyType::UrlEncoded => form_view(tab, open_menu, false),
@@ -42,10 +49,13 @@ pub fn view<'a>(tab: &'a RequestTabState, open_menu: Option<&str>) -> Element<'a
             // Postman's layout: query on top, variables underneath. Both panes
             // are code editors, so both keep their own undo history and the
             // shared gutter/theme look.
-            let query: Element<Message> = tab
-                .body_editor
-                .view()
-                .map(|m| Message::Request(RequestMsg::BodyEdited(m)));
+            let query: Element<Message> = variable_hover(
+                tab.body_editor
+                    .view()
+                    .map(|m| Message::Request(RequestMsg::BodyEdited(m))),
+                tab,
+                env,
+            );
             let variables: Element<Message> = tab
                 .graphql_variables_editor
                 .view()
@@ -83,7 +93,8 @@ fn preview_actions<'a>(
 ) -> Element<'a, Message> {
     let is_preview = field.field_type == FormFieldType::Text
         && !crate::ui::request::cell::is_inline(&field.value);
-    if !is_preview {
+    if !is_preview || crate::services::variables::sensitive(&field.key) || field.key.contains("{{")
+    {
         return Space::new().width(0).into();
     }
     let expanded = tab.form_viewers.contains_key(&field.id);
@@ -123,6 +134,9 @@ fn form_value_viewer<'a>(
     tab: &'a RequestTabState,
     field: &'a FormField,
 ) -> Option<Element<'a, Message>> {
+    if crate::services::variables::sensitive(&field.key) || field.key.contains("{{") {
+        return None;
+    }
     let viewer = tab.form_viewers.get(&field.id)?;
     let count = viewer.page_count();
     let page = viewer.page().min(count - 1);
@@ -454,6 +468,10 @@ fn form_view<'a>(
             })
             .padding([4, 10])
             .into()
+        } else if crate::services::variables::sensitive(&field.key) || field.key.contains("{{") {
+            crate::ui::request::cell::secret_cell(&field.value, move |s| {
+                Message::Request(RequestMsg::FormFieldValueChanged(i, s))
+            })
         } else {
             crate::ui::request::cell::text_cell(
                 "Value",
@@ -515,4 +533,249 @@ fn form_view<'a>(
     ))
     .style(crate::ui::theme::thin_scrollbar)
     .into()
+}
+
+/// Postman's variable help around the body editor: a card for the `{{name}}`
+/// under the mouse, an outlined mark on every token and the `{{` autocomplete
+/// at the caret. All layers are always present so the editor's widget state
+/// (scroll, focus) survives them coming and going.
+fn variable_hover<'a>(
+    editor: Element<'a, Message>,
+    tab: &'a RequestTabState,
+    env: Option<&'a crate::domain::environment::AppEnvironment>,
+) -> Element<'a, Message> {
+    use crate::ui::widgets::popup;
+    use iced::widget::{Stack, pin, stack};
+
+    let tracked = iced::widget::mouse_area(editor)
+        .on_move(|p| Message::Request(RequestMsg::BodyHovered(Some(p))))
+        .on_exit(Message::Request(RequestMsg::BodyHovered(None)));
+
+    let mut marks = Stack::new().width(Length::Fill).height(Length::Fill);
+    for rect in variable_rects(&tab.body_editor, &tab.body_vars) {
+        let color = mark_color(&tab.body_vars[rect.token].name, env);
+        marks = marks.push(
+            pin(container(Space::new())
+                .width(rect.width)
+                .height(rect.height)
+                .style(move |_| container::Style {
+                    background: Some(Background::Color(iced::Color { a: 0.18, ..color })),
+                    border: Border {
+                        color,
+                        width: 1.0,
+                        radius: 3.0.into(),
+                    },
+                    ..Default::default()
+                }))
+            .x(rect.x)
+            .y(rect.y),
+        );
+    }
+    let marks = container(marks)
+        .clip(true)
+        .width(Length::Fill)
+        .height(Length::Fill);
+
+    // A caret-sized anchor: the list opens under it and flips above near the
+    // bottom edge, and takes arrows and Enter before the editor sees them.
+    let line_height = tab.body_editor.line_height();
+    let caret = tab.body_editor.cursor_screen_position().unwrap_or_default();
+    let (list, selected): (&[_], usize) = tab
+        .body_completion
+        .as_ref()
+        .map_or((&[], 0), |c| (&c.items[..], c.selected));
+    let completion = popup::popup_suggest(
+        Space::new().width(1).height(line_height).into(),
+        super::headers::suggest_list(list, selected, |apply| {
+            Message::Request(RequestMsg::BodyCompletionPicked(apply))
+        }),
+        Message::Request(RequestMsg::BodyCompletionClosed),
+        !list.is_empty(),
+        popup::SuggestNav {
+            up: Message::Request(RequestMsg::BodyCompletionMoved(false)),
+            down: Message::Request(RequestMsg::BodyCompletionMoved(true)),
+            enter: Message::Request(RequestMsg::BodyCompletionAccepted),
+        },
+    );
+    let anchor = pin(completion)
+        .x(caret.x)
+        .y((caret.y - tab.body_editor.viewport_scroll()).max(0.0));
+
+    // The card hangs off the token itself, so the mouse can walk onto it.
+    let (card, token) = match tab.var_card.as_ref() {
+        Some(c) => match c.anchor {
+            crate::state::tabs::VarCardAnchor::Body(rect) => (Some(c), rect),
+            crate::state::tabs::VarCardAnchor::Header(..) => (None, iced::Rectangle::default()),
+        },
+        None => (None, iced::Rectangle::default()),
+    };
+    let card_layer = pin(popup::popup_card(
+        Space::new().width(token.width).height(token.height).into(),
+        card.map_or_else(
+            || Space::new().width(0).height(0).into(),
+            |c| super::var_card::view(c, env),
+        ),
+        Message::Request(RequestMsg::VarCardClosed),
+        card.is_some(),
+    ))
+    .x(token.x)
+    .y(token.y);
+
+    stack![tracked, marks, anchor, card_layer]
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+/// Blue for a variable that resolves, red for one that does not (Postman's).
+fn mark_color(name: &str, env: Option<&crate::domain::environment::AppEnvironment>) -> iced::Color {
+    use crate::services::header_suggest::DYNAMIC_VARIABLES;
+    let known = env.is_some_and(|e| e.variables.contains_key(name))
+        || DYNAMIC_VARIABLES.iter().any(|(n, _)| *n == name);
+    if known {
+        iced::Color::from_rgb8(0x4A, 0x9E, 0xFF)
+    } else {
+        Palette::ERROR
+    }
+}
+
+/// Where one visual row of a token sits, in the editor's viewport pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct VariableRect {
+    pub(crate) token: usize,
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+    pub(crate) width: f32,
+    pub(crate) height: f32,
+}
+
+/// Token geometry for the visible rows. The editor keeps its layout private,
+/// but its own hit-test accounts for wrapping, folding, wide characters and
+/// horizontal scroll, so rows and columns are found by asking it.
+pub(crate) fn variable_rects(
+    editor: &iced_code_editor::CodeEditor,
+    tokens: &[crate::services::variables::VarToken],
+) -> Vec<VariableRect> {
+    use iced::Point;
+    const MAX_VISIBLE_ROWS: usize = 200;
+    let (line_height, height, scroll) = (
+        editor.line_height(),
+        editor.viewport_height(),
+        editor.viewport_scroll(),
+    );
+    let width = editor.viewport_width();
+    if tokens.is_empty() || line_height <= 0.0 || height <= 0.0 || width <= 0.0 {
+        return Vec::new();
+    }
+    let position = |x: f32, y: f32| editor.lsp_position_at_point(Point::new(x, y));
+    // Text starts where the hit-test stops reporting the gutter.
+    let probe_y = scroll + line_height / 2.0;
+    let (mut lo, mut hi) = (0.0_f32, width);
+    if position(hi, probe_y).is_none() {
+        return Vec::new();
+    }
+    while hi - lo > 0.5 {
+        let mid = (lo + hi) / 2.0;
+        if position(mid, probe_y).is_some() {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    let text_x = hi;
+    let half_char = editor.char_width() / 2.0;
+    let mut out = Vec::new();
+    let first = (scroll / line_height).floor() as usize;
+    let rows = (((height / line_height).ceil() as usize) + 1).min(MAX_VISIBLE_ROWS);
+    for row in first..first + rows {
+        let y = (row as f32 + 0.5) * line_height;
+        let Some(start) = position(text_x, y) else {
+            continue;
+        };
+        if !tokens.iter().any(|t| t.line == start.line as usize) {
+            continue;
+        }
+        let Some(end) = position(1.0e7, y) else {
+            continue;
+        };
+        // Past the last row the hit-test answers "end of document".
+        if start.line != end.line || start.character >= end.character {
+            continue;
+        }
+        let (row_start, row_end) = (start.character as usize, end.character as usize);
+        // The hit-test rounds to the nearest column: the first x reaching
+        // column `c` lies half a character before that column's left edge.
+        let edge = |column: usize| -> f32 {
+            if column <= row_start {
+                return text_x + 5.0;
+            }
+            let reaches = |x: f32| position(x, y).is_some_and(|p| p.character as usize >= column);
+            if !reaches(width) {
+                return width;
+            }
+            let (mut lo, mut hi) = (text_x, width);
+            while hi - lo > 0.5 {
+                let mid = (lo + hi) / 2.0;
+                if reaches(mid) {
+                    hi = mid;
+                } else {
+                    lo = mid;
+                }
+            }
+            hi + half_char
+        };
+        for (token, t) in tokens.iter().enumerate() {
+            if t.line != start.line as usize {
+                continue;
+            }
+            let (from, to) = (t.start.max(row_start), t.end.min(row_end));
+            if from >= to {
+                continue;
+            }
+            let (left, right) = (edge(from), edge(to));
+            if right <= left {
+                continue;
+            }
+            out.push(VariableRect {
+                token,
+                x: left - 1.0,
+                y: row as f32 * line_height - scroll,
+                width: right - left + 2.0,
+                height: line_height,
+            });
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod variable_rect_tests {
+    use super::*;
+    use crate::services::variables::variable_tokens;
+
+    #[test]
+    fn rects_cover_the_token_columns_on_their_row() {
+        let body = "{\n  \"a\": \"{{dev}}\",\n  \"b\": 1\n}";
+        let editor = crate::state::tabs::make_code_editor(body, "json");
+        let tokens = variable_tokens(body);
+        let rects = variable_rects(&editor, &tokens);
+        assert_eq!(rects.len(), 1, "{rects:?}");
+        let r = rects[0];
+        let (cw, lh) = (editor.char_width(), editor.line_height());
+        assert_eq!(r.y, lh, "second line");
+        assert_eq!(r.height, lh);
+        // `{{dev}}` is 7 narrow characters, plus the mark's 1px margins.
+        assert!((r.width - (7.0 * cw + 2.0)).abs() <= 1.5, "{r:?} cw={cw}");
+        // The rect's left edge maps back to the token's first column.
+        let hit = editor
+            .lsp_position_at_point(iced::Point::new(r.x + 2.0, r.y + lh / 2.0))
+            .unwrap();
+        assert_eq!((hit.line, hit.character), (1, 8), "{r:?}");
+    }
+
+    #[test]
+    fn no_tokens_no_rects() {
+        let editor = crate::state::tabs::make_code_editor("{}", "json");
+        assert!(variable_rects(&editor, &[]).is_empty());
+    }
 }

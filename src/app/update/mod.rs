@@ -54,6 +54,7 @@ pub(crate) fn update(state: &mut AppState, message: Message) -> Task<Message> {
                     LayoutMsg::SnippetWidthChanged(_)
                         | LayoutMsg::SidebarWidthChanged(_)
                         | LayoutMsg::PanelSplitChanged(_)
+                        | LayoutMsg::ConsoleResized(_)
                         | LayoutMsg::SnippetCopied
                 )
                 | Message::Sidebar(
@@ -77,6 +78,21 @@ pub(crate) fn update(state: &mut AppState, message: Message) -> Task<Message> {
                 | Message::Request(
                     crate::message::RequestMsg::TitleChanged(_)
                         | crate::message::RequestMsg::UrlHovered(_)
+                        | crate::message::RequestMsg::BodyHovered(_)
+                        | crate::message::RequestMsg::BodyCompletionMoved(_)
+                        | crate::message::RequestMsg::BodyCompletionClosed
+                        | crate::message::RequestMsg::ScriptPhaseSelected(_)
+                        | crate::message::RequestMsg::ScriptCompletionMoved(_)
+                        | crate::message::RequestMsg::ScriptCompletionClosed
+                        | crate::message::RequestMsg::VarCardDue(_)
+                        | crate::message::RequestMsg::VarCardHover(_)
+                        | crate::message::RequestMsg::VarCardPinned
+                        | crate::message::RequestMsg::VarCardRevealToggled
+                        | crate::message::RequestMsg::VarCardCopied(_)
+                        | crate::message::RequestMsg::VarCardClosed
+                        | crate::message::RequestMsg::HeaderVarHovered(..)
+                        | crate::message::RequestMsg::HeaderVarDue(..)
+                        | crate::message::RequestMsg::VarCardLeaveDue
                         | crate::message::RequestMsg::AutoHeadersToggled
                         | crate::message::RequestMsg::UrlCompletionMoved(_)
                         | crate::message::RequestMsg::UrlVariableValueChanged(_)
@@ -88,8 +104,30 @@ pub(crate) fn update(state: &mut AppState, message: Message) -> Task<Message> {
                 | Message::Request(crate::message::RequestMsg::TabDragOver(_))
                 | Message::Palette(crate::message::PaletteMsg::Frame(_))
         );
+    let edited = match &message {
+        Message::Request(msg) => request::edited_field(msg),
+        _ => None,
+    };
+    let had_editor = edited.map(|(row, field)| state.tabs.active_tab().shows_editor(row, field));
     let task = dispatch(state, message);
+    let mut task = task;
+    if !state.tabs.tabs.is_empty() {
+        state.tabs.active_tab_mut().sync_field_editors();
+        // A secret field swaps its masked input for its editor when it gains
+        // a variable (and back): keep the caret in it across the swap.
+        if let (Some((row, field)), Some(before)) = (edited, had_editor)
+            && before != state.tabs.active_tab().shows_editor(row, field)
+        {
+            task = Task::batch([
+                task,
+                iced::widget::operation::focus(crate::ui::request::cell::field_widget_id(
+                    row, field,
+                )),
+            ]);
+        }
+    }
     if refresh_snippet {
+
         crate::app::snippet::refresh(state);
     }
     if prune_examples {
@@ -136,7 +174,15 @@ pub(crate) fn marks_session_dirty(message: &Message) -> bool {
     }
     if matches!(
         message,
-        Message::Layout(LayoutMsg::ConsoleToggled | LayoutMsg::SnippetCopied)
+        Message::Layout(
+            LayoutMsg::ConsoleToggled
+                | LayoutMsg::ConsoleResized(_)
+                | LayoutMsg::ConsoleFilterSet(_)
+                | LayoutMsg::ConsoleCleared
+                | LayoutMsg::ConsoleCopied
+                | LayoutMsg::ConsoleRowToggled(_)
+                | LayoutMsg::SnippetCopied
+        )
             | Message::Sidebar(crate::message::SidebarMsg::EnvironmentPageClosed)
             | Message::App(crate::message::AppMsg::OpenTerminal)
             | Message::Response(crate::message::ResponseMsg::ConsoleEdited(_))
@@ -222,6 +268,21 @@ pub(crate) fn marks_session_dirty(message: &Message) -> bool {
                 | crate::message::RequestMsg::FormValuePagePrev(_)
                 | crate::message::RequestMsg::FormValuePageNext(_)
                 | crate::message::RequestMsg::UrlHovered(_)
+                | crate::message::RequestMsg::BodyHovered(_)
+                | crate::message::RequestMsg::BodyCompletionMoved(_)
+                | crate::message::RequestMsg::BodyCompletionClosed
+                | crate::message::RequestMsg::ScriptPhaseSelected(_)
+                | crate::message::RequestMsg::ScriptCompletionMoved(_)
+                | crate::message::RequestMsg::ScriptCompletionClosed
+                | crate::message::RequestMsg::VarCardDue(_)
+                | crate::message::RequestMsg::VarCardHover(_)
+                | crate::message::RequestMsg::VarCardPinned
+                | crate::message::RequestMsg::VarCardRevealToggled
+                | crate::message::RequestMsg::VarCardCopied(_)
+                | crate::message::RequestMsg::VarCardClosed
+                | crate::message::RequestMsg::HeaderVarHovered(..)
+                | crate::message::RequestMsg::HeaderVarDue(..)
+                | crate::message::RequestMsg::VarCardLeaveDue
                 | crate::message::RequestMsg::UrlCompletionMoved(_)
                 | crate::message::RequestMsg::UrlVariableValueChanged(_)
                 | crate::message::RequestMsg::UrlVariableEnvironmentSelected(_)
@@ -245,6 +306,8 @@ pub(crate) fn marks_session_dirty(message: &Message) -> bool {
                 | crate::message::ResponseMsg::ViewerWrapToggled
                 | crate::message::ResponseMsg::BodyLangSelected(_)
                 | crate::message::ResponseMsg::PreviewToggled
+                | crate::message::ResponseMsg::ClearResponse
+                | crate::message::ResponseMsg::RevealToggled(_)
         )
     )
 }
@@ -257,13 +320,31 @@ fn dispatch(state: &mut AppState, message: Message) -> Task<Message> {
     {
         return Task::none();
     }
-    if (state.sidebar.collection_delete_id.is_some() || state.sidebar.request_delete.is_some())
+    if (!state.sidebar.collection_delete_ids.is_empty()
+        || state.sidebar.request_delete.is_some()
+        || state.examples.delete_asked.is_some())
         && matches!(&message, Message::Request(_) | Message::Palette(_))
     {
         return Task::none();
     }
     if blocks_example_exit(state, &message) {
         return Task::none();
+    }
+    if state.collection_docs.is_some()
+        && let Message::Request(msg) = &message
+    {
+        use crate::message::RequestMsg;
+        match msg {
+            RequestMsg::CloseCurrentTab => {
+                state.collection_docs = None;
+                return Task::none();
+            }
+            RequestMsg::SwitchTab(_)
+            | RequestMsg::NewTab
+            | RequestMsg::NewWsTab
+            | RequestMsg::CloseTab(_) => state.collection_docs = None,
+            _ => {}
+        }
     }
     if state.sidebar.environment_page.is_some() {
         if let Message::Request(msg) = &message {
@@ -376,6 +457,16 @@ fn blocks_example_exit(state: &mut AppState, message: &Message) -> bool {
 fn handle_layout(state: &mut AppState, msg: LayoutMsg) -> Task<Message> {
     match msg {
         LayoutMsg::ConsoleToggled => state.console_open = !state.console_open,
+        LayoutMsg::ConsoleResized(height) => state.console_height = height,
+        LayoutMsg::ConsoleFilterSet(filter) => {
+            state.console.filter = filter;
+            state.sidebar.context_menu = None;
+        }
+        LayoutMsg::ConsoleCleared => state.console.clear(),
+        LayoutMsg::ConsoleCopied => {
+            return iced::clipboard::write::<Message>(state.console.to_text());
+        }
+        LayoutMsg::ConsoleRowToggled(key) => state.console.toggle(key),
         LayoutMsg::ZoomIn => state.ui_scale = (state.ui_scale + 0.1).min(2.0),
         LayoutMsg::ZoomOut => state.ui_scale = (state.ui_scale - 0.1).max(0.5),
         LayoutMsg::ZoomReset => state.ui_scale = 1.0,

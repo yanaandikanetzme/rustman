@@ -214,3 +214,28 @@ pub fn file_up() -> Text<'static> {
 pub fn file_type() -> Text<'static> {
     glyph('\u{e329}')
 }
+/// Lucide play, the response Preview toggle.
+pub fn play() -> Text<'static> {
+    glyph(PLAY)
+}
+/// Lucide info, auto-generated header hint.
+pub fn info() -> Text<'static> {
+    glyph(INFO)
+}
+const PLAY: char = '\u{e13c}';
+const INFO: char = '\u{e0f9}';
+
+#[cfg(test)]
+mod glyph_tests {
+    #[test]
+    fn new_glyphs_exist_in_the_icon_font() {
+        let face = ttf_parser::Face::parse(include_bytes!("../../assets/fonts/lucide.ttf"), 0)
+            .expect("lucide parses");
+        for (c, name) in [(super::PLAY, "play"), (super::INFO, "info")] {
+            let id = face.glyph_index(c).expect("glyph present");
+            if let Some(found) = face.glyph_name(id) {
+                assert_eq!(found, name);
+            }
+        }
+    }
+}

@@ -99,7 +99,7 @@ fn hover_card(
     iced::widget::tooltip(
         container(anchor).padding([2, 2]),
         container(card)
-            .width(300)
+            .width(320)
             .padding(12)
             .style(|_| container::Style {
                 background: Some(Background::Color(Palette::surface_high())),
@@ -286,9 +286,14 @@ fn network_card(resp: &HttpResponse) -> Option<Element<'static, Message>> {
     }
     let line = |label: &'static str, value: String| -> Element<'static, Message> {
         row![
-            text(label).size(11).color(Palette::text_muted()),
-            Space::new().width(Length::Fill),
-            text(value).size(11).font(MONO).color(Palette::text()),
+            text(label).size(11).color(Palette::text_muted()).width(88),
+            text(value)
+                .size(11)
+                .font(MONO)
+                .color(Palette::text())
+                .width(Length::Fill)
+                .align_x(iced::widget::text::Alignment::Right)
+                .wrapping(iced::widget::text::Wrapping::Glyph),
         ]
         .padding(iced::padding::left(26))
         .into()

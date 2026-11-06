@@ -282,6 +282,7 @@ fn extract_kv_params(raw: Option<&Vec<Value>>, in_type: &str) -> Vec<KeyValue> {
                 key: name.to_owned(),
                 value,
                 enabled: required,
+                description: String::new(),
             }
         })
         .collect()
@@ -304,6 +305,7 @@ fn extract_headers(op: &Value) -> Vec<KeyValue> {
                 key: name.to_owned(),
                 value,
                 enabled: required,
+                description: String::new(),
             }
         })
         .collect()

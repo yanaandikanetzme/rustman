@@ -7,6 +7,8 @@ pub struct ExamplesState {
     pub items: HashMap<String, Vec<RequestExample>>,
     pub expanded: HashSet<String>,
     pub editor: Option<ExampleEditor>,
+    /// The example whose delete dialog is open, asked from the sidebar.
+    pub delete_asked: Option<String>,
 }
 
 pub struct ExampleEditor {
@@ -36,6 +38,7 @@ impl ExampleEditor {
                 key: key.clone(),
                 value: value.clone(),
                 enabled: true,
+                description: String::new(),
             })
             .collect();
         response_headers.sort_by(|a, b| a.key.cmp(&b.key));

@@ -167,6 +167,10 @@ pub struct KeyValue {
     pub key: String,
     pub value: String,
     pub enabled: bool,
+    /// Free-text note shown in the Description column (Postman's). Older
+    /// saved requests have none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
 }
 
 impl KeyValue {
@@ -176,6 +180,7 @@ impl KeyValue {
             key: String::new(),
             value: String::new(),
             enabled: true,
+            description: String::new(),
         }
     }
 }
@@ -253,6 +258,7 @@ pub fn sync_params_from_url(url: &str, existing: &[KeyValue]) -> Vec<KeyValue> {
                 key: percent_decode(k),
                 value: percent_decode(val),
                 enabled: true,
+                description: String::new(),
             }
         })
         .collect();
@@ -400,6 +406,7 @@ mod query_sync_tests {
             key: key.into(),
             value: value.into(),
             enabled,
+            description: String::new(),
         }
     }
 

@@ -27,7 +27,6 @@ pub struct ThemeSpec {
     pub surface: Color,
     pub surface_high: Color,
     pub surface_raised: Color,
-    pub row_odd: Color,
     pub border: Color,
     pub border_subtle: Color,
     pub text: Color,
@@ -49,7 +48,6 @@ pub const THEMES: &[ThemeSpec] = &[
         surface: Color::from_rgb(0.082, 0.090, 0.133),
         surface_high: Color::from_rgb(0.114, 0.125, 0.180),
         surface_raised: Color::from_rgb(0.149, 0.161, 0.227),
-        row_odd: Color::from_rgb(0.066, 0.071, 0.106),
         border: Color::from_rgb(0.243, 0.263, 0.353),
         border_subtle: Color::from_rgb(0.145, 0.157, 0.227),
         text: Color::from_rgb(0.953, 0.957, 0.984),
@@ -67,7 +65,6 @@ pub const THEMES: &[ThemeSpec] = &[
         surface: Color::from_rgb(0.114, 0.106, 0.098),
         surface_high: Color::from_rgb(0.161, 0.149, 0.137),
         surface_raised: Color::from_rgb(0.208, 0.192, 0.176),
-        row_odd: Color::from_rgb(0.090, 0.084, 0.078),
         border: Color::from_rgb(0.320, 0.293, 0.261),
         border_subtle: Color::from_rgb(0.190, 0.176, 0.161),
         text: Color::from_rgb(0.973, 0.965, 0.953),
@@ -85,7 +82,6 @@ pub const THEMES: &[ThemeSpec] = &[
         surface: Color::from_rgb(0.095, 0.101, 0.123),
         surface_high: Color::from_rgb(0.140, 0.149, 0.178),
         surface_raised: Color::from_rgb(0.185, 0.196, 0.230),
-        row_odd: Color::from_rgb(0.076, 0.081, 0.099),
         border: Color::from_rgb(0.280, 0.300, 0.350),
         border_subtle: Color::from_rgb(0.175, 0.186, 0.220),
         text: Color::from_rgb(0.965, 0.973, 0.988),
@@ -103,7 +99,6 @@ pub const THEMES: &[ThemeSpec] = &[
         surface: Color::from_rgb(0.180, 0.204, 0.243),
         surface_high: Color::from_rgb(0.216, 0.243, 0.283),
         surface_raised: Color::from_rgb(0.263, 0.298, 0.369),
-        row_odd: Color::from_rgb(0.160, 0.180, 0.216),
         border: Color::from_rgb(0.320, 0.356, 0.420),
         border_subtle: Color::from_rgb(0.230, 0.255, 0.300),
         text: Color::from_rgb(0.925, 0.937, 0.957),
@@ -121,7 +116,6 @@ pub const THEMES: &[ThemeSpec] = &[
         surface: Color::from_rgb(0.184, 0.192, 0.239),
         surface_high: Color::from_rgb(0.208, 0.220, 0.267),
         surface_raised: Color::from_rgb(0.267, 0.278, 0.353),
-        row_odd: Color::from_rgb(0.145, 0.153, 0.196),
         border: Color::from_rgb(0.330, 0.345, 0.420),
         border_subtle: Color::from_rgb(0.230, 0.242, 0.300),
         text: Color::from_rgb(0.973, 0.973, 0.949),
@@ -139,7 +133,6 @@ pub const THEMES: &[ThemeSpec] = &[
         surface: Color::from_rgb(0.102, 0.102, 0.133),
         surface_high: Color::from_rgb(0.165, 0.165, 0.216),
         surface_raised: Color::from_rgb(0.212, 0.212, 0.275),
-        row_odd: Color::from_rgb(0.086, 0.086, 0.114),
         border: Color::from_rgb(0.329, 0.329, 0.427),
         border_subtle: Color::from_rgb(0.176, 0.196, 0.255),
         text: Color::from_rgb(0.863, 0.843, 0.729),
@@ -157,7 +150,6 @@ pub const THEMES: &[ThemeSpec] = &[
         surface: Color::from_rgb(0.027, 0.212, 0.259),
         surface_high: Color::from_rgb(0.043, 0.243, 0.293),
         surface_raised: Color::from_rgb(0.070, 0.280, 0.330),
-        row_odd: Color::from_rgb(0.000, 0.145, 0.184),
         border: Color::from_rgb(0.220, 0.370, 0.400),
         border_subtle: Color::from_rgb(0.100, 0.260, 0.300),
         text: Color::from_rgb(0.933, 0.910, 0.835),
@@ -175,7 +167,6 @@ pub const THEMES: &[ThemeSpec] = &[
         surface: Color::from_rgb(0.996, 0.997, 1.000),
         surface_high: Color::from_rgb(0.925, 0.941, 0.965),
         surface_raised: Color::from_rgb(0.890, 0.914, 0.949),
-        row_odd: Color::from_rgb(0.977, 0.982, 0.991),
         border: Color::from_rgb(0.737, 0.776, 0.835),
         border_subtle: Color::from_rgb(0.847, 0.875, 0.918),
         text: Color::from_rgb(0.105, 0.124, 0.158),
@@ -197,7 +188,6 @@ pub const THEMES: &[ThemeSpec] = &[
         surface: Color::from_rgb8(0xFF, 0xFF, 0xFF),    // bg-0
         surface_high: Color::from_rgb8(0xF2, 0xF2, 0xF2), // bg-2
         surface_raised: Color::from_rgb8(0xED, 0xED, 0xED),
-        row_odd: Color::from_rgb8(0xFC, 0xFC, 0xFC),
         border: Color::from_rgb8(0xE6, 0xE6, 0xE6), // bd-2
         border_subtle: Color::from_rgb8(0xED, 0xED, 0xED), // bd-1
         text: Color::from_rgb8(0x21, 0x21, 0x21),   // tx-1
@@ -215,7 +205,6 @@ pub const THEMES: &[ThemeSpec] = &[
         surface: Color::from_rgb8(0x21, 0x21, 0x21),    // bg-0
         surface_high: Color::from_rgb8(0x2B, 0x2B, 0x2B), // bg-2
         surface_raised: Color::from_rgb8(0x30, 0x30, 0x30),
-        row_odd: Color::from_rgb8(0x1E, 0x1E, 0x1E),
         border: Color::from_rgb8(0x3B, 0x3B, 0x3B), // bd-2
         border_subtle: Color::from_rgb8(0x30, 0x30, 0x30), // bd-1
         text: Color::from_rgb8(0xF2, 0xF2, 0xF2),   // tx-1
@@ -415,9 +404,6 @@ impl Palette {
     }
     pub fn surface_raised() -> Color {
         Self::current().surface_raised
-    }
-    pub fn row_odd() -> Color {
-        Self::current().row_odd
     }
     pub fn border() -> Color {
         Self::current().border

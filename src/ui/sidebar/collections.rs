@@ -119,6 +119,10 @@ fn panel(state: &AppState) -> Element<'_, Message> {
         bottom: 2.0,
         left: TREE_PAD_X,
     });
+    let header: Element<Message> = match selection_bar(state) {
+        Some(bar) => column![header, bar].into(),
+        None => header.into(),
+    };
     let mut tree = column![].spacing(0);
     if !state.sidebar.collections_collapsed {
         if state.drafts.only_drafts {
@@ -163,11 +167,8 @@ fn panel(state: &AppState) -> Element<'_, Message> {
                 .into(),
         )
     };
-    let sections = crate::ui::components::molecules::sidebar_sections(
-        header.into(),
-        body,
-        environments.into(),
-    );
+    let sections =
+        crate::ui::components::molecules::sidebar_sections(header, body, environments.into());
 
     // Releasing the mouse anywhere over the tree ends any running drag.
     mouse_area(
@@ -314,6 +315,11 @@ fn collection_view<'a>(
     let renaming = state.sidebar.col_renaming.as_deref() == Some(collection.id.as_str());
     let dragging = state.sidebar.dragging_item.as_deref() == Some(collection.id.as_str());
     let menu_open = state.sidebar.context_menu.as_deref() == Some(collection.id.as_str());
+    let selected = state.sidebar.selected_collections.contains(&collection.id)
+        || state
+            .collection_docs
+            .as_ref()
+            .is_some_and(|d| d.collection_id == collection.id);
 
     let header: Element<Message> = if renaming {
         let rid = collection.id.clone();
@@ -367,7 +373,11 @@ fn collection_view<'a>(
                 content,
                 BASE_INDENT,
                 COLLECTION_ROW_H,
-                container_fill(state, &collection.id, dragging),
+                if selected && state.sidebar.drop_target.as_deref() != Some(&collection.id) {
+                    RowFill::Selected
+                } else {
+                    container_fill(state, &collection.id, dragging)
+                },
                 Message::Sidebar(SidebarMsg::ItemDragStart(collection.id.clone())),
             ),
             &collection.id,
@@ -377,7 +387,14 @@ fn collection_view<'a>(
     let header = if menu_open {
         popup(
             header,
-            collection_menu(&collection.id),
+            collection_menu(
+                &collection.id,
+                if selected {
+                    state.sidebar.selected_collections.len()
+                } else {
+                    0
+                },
+            ),
             Message::Sidebar(SidebarMsg::ContextMenuClosed),
         )
     } else {
@@ -536,6 +553,7 @@ fn request_view<'a>(
 ) -> Element<'a, Message> {
     let selected = state.examples.editor.is_none()
         && state.sidebar.environment_page.is_none()
+        && state.collection_docs.is_none()
         && state.sidebar.selected_request.as_deref() == Some(req.id.as_str());
     let active_parent = state
         .examples
@@ -684,7 +702,7 @@ fn request_view<'a>(
             ]
             .spacing(6)
             .align_y(iced::Alignment::Center);
-            children = children.push(tree_row(
+            let example_row = mouse_area(tree_row(
                 content,
                 indent + METHOD_W - 8.0,
                 24.0,
@@ -696,7 +714,21 @@ fn request_view<'a>(
                 Message::Example(crate::message::example::ExampleMsg::Open(
                     example.id.clone(),
                 )),
-            ));
+            ))
+            .on_right_press(Message::Sidebar(SidebarMsg::ContextMenuOpened(
+                example.id.clone(),
+            )));
+            children = children.push(
+                if state.sidebar.context_menu.as_deref() == Some(example.id.as_str()) {
+                    popup(
+                        example_row.into(),
+                        example_menu(&example.id),
+                        Message::Sidebar(SidebarMsg::ContextMenuClosed),
+                    )
+                } else {
+                    example_row.into()
+                },
+            );
         }
     }
     children.into()
@@ -834,7 +866,16 @@ fn empty_state<'a>(label: &'static str, depth: usize) -> Element<'a, Message> {
 }
 
 /// Right-click menu for a collection: add children, rename, export, delete.
-fn collection_menu(col_id: &str) -> Element<'_, Message> {
+/// `selected` > 1 when the row is part of a Shift/Ctrl multi-selection.
+fn collection_menu(col_id: &str, selected: usize) -> Element<'_, Message> {
+    if selected > 1 {
+        return context_menu(vec![menu_item(
+            Some(icons::trash()),
+            format!("Delete {selected} collections"),
+            Some(Message::Sidebar(SidebarMsg::DeleteSelectedCollections)),
+            true,
+        )]);
+    }
     context_menu(vec![
         ctx_item(
             "New request",
@@ -904,6 +945,17 @@ fn group_menu(group_id: &str) -> Element<'_, Message> {
             true,
         ),
     ])
+}
+
+/// Right-click menu for a saved example.
+fn example_menu(id: &str) -> Element<'static, Message> {
+    context_menu(vec![ctx_item(
+        "Delete",
+        Message::Example(crate::message::example::ExampleMsg::DeleteAsked(
+            id.to_owned(),
+        )),
+        true,
+    )])
 }
 
 /// Right-click menu for a request: duplicate, rename, delete.
@@ -1024,4 +1076,81 @@ fn ctx_item(label: &'static str, msg: Message, danger: bool) -> Element<'static,
         _ => icons::trash(),
     };
     menu_item(Some(icon), label, Some(msg), danger)
+}
+
+/// Shown while collections are Shift/Ctrl-selected: how many, a Delete for
+/// all of them (works even when the Delete key goes to a focused field) and
+/// a clear button. `None` without a selection.
+fn selection_bar(state: &AppState) -> Option<Element<'_, Message>> {
+    let n = state
+        .collections
+        .iter()
+        .filter(|c| state.sidebar.selected_collections.contains(&c.id))
+        .count();
+    if n == 0 {
+        return None;
+    }
+    let delete = button(
+        row![
+            icons::trash().size(12).color(Palette::ERROR),
+            text("Delete").size(12).color(Palette::ERROR),
+        ]
+        .spacing(5)
+        .align_y(iced::Alignment::Center),
+    )
+    .on_press(Message::Sidebar(SidebarMsg::DeleteSelectedCollections))
+    .padding([3, 8])
+    .style(|_, status| iced::widget::button::Style {
+        background: matches!(status, iced::widget::button::Status::Hovered)
+            .then(|| Palette::error_soft().into()),
+        text_color: Palette::ERROR,
+        border: iced::Border {
+            radius: 4.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let clear = crate::ui::widgets::mini::icon_button(
+        icons::close(),
+        "Clear selection (Esc)",
+        Some(Message::Sidebar(SidebarMsg::CollectionSelectionCleared)),
+        false,
+    );
+    let bar = container(
+        row![
+            text(if n == 1 {
+                "1 collection selected".to_owned()
+            } else {
+                format!("{n} collections selected")
+            })
+            .size(12)
+            .font(UI_FONT_MEDIUM)
+            .color(Palette::accent()),
+            Space::new().width(Length::Fill),
+            delete,
+            clear,
+        ]
+        .spacing(4)
+        .align_y(iced::Alignment::Center),
+    )
+    .padding([4, 8])
+    .width(Length::Fill)
+    .style(|_| container::Style {
+        background: Some(Palette::accent_soft().into()),
+        border: iced::Border {
+            radius: 6.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    Some(
+        container(bar)
+            .padding(Padding {
+                top: 2.0,
+                right: TREE_PAD_X,
+                bottom: 4.0,
+                left: TREE_PAD_X,
+            })
+            .into(),
+    )
 }

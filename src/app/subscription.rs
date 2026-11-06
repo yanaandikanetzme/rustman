@@ -33,11 +33,12 @@ pub(crate) fn subscription(state: &AppState) -> Subscription<Message> {
         .tabs
         .tabs
         .iter()
-        .filter(|t| t.ws.connecting || t.ws.connected)
+        .filter(|t| t.ws.connection_id.is_some() && (t.ws.connecting || t.ws.connected))
         .map(|t| {
             Subscription::run_with(
                 WsConn {
                     tab_id: t.id.clone(),
+                    connection_id: t.ws.connection_id.unwrap(),
                     url: t.ws.url.clone(),
                 },
                 ws_stream,
@@ -50,11 +51,17 @@ pub(crate) fn subscription(state: &AppState) -> Subscription<Message> {
     if state.palette_anim.is_some() {
         all.push(iced::window::frames().map(|t| Message::Palette(PaletteMsg::Frame(t))));
     }
-    if state.sidebar.collection_delete_id.is_some() {
+    all.push(event::listen_with(modifier_keys));
+    if !state.sidebar.collection_delete_ids.is_empty() {
         all.push(event::listen_with(collection_delete_keys));
+    } else if !state.sidebar.selected_collections.is_empty() {
+        all.push(event::listen_with(collection_selection_keys));
     }
     if state.sidebar.request_delete.is_some() {
         all.push(event::listen_with(request_delete_keys));
+    }
+    if state.examples.delete_asked.is_some() {
+        all.push(event::listen_with(example_delete_keys));
     }
     if state.sidebar.search_open && !state.palette_open {
         all.push(event::listen_with(sidebar_search_keys));
@@ -114,6 +121,47 @@ fn import_events(event: Event, _status: event::Status, _window: window::Id) -> O
     }
 }
 
+/// Track held Shift/Ctrl for multi-select clicks in the collection tree.
+/// Focus loss resets them, so a modifier released elsewhere is not stuck.
+fn modifier_keys(event: Event, _status: event::Status, _window: window::Id) -> Option<Message> {
+    use crate::message::SidebarMsg;
+    match event {
+        Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => {
+            Some(Message::Sidebar(SidebarMsg::ModifiersChanged(m)))
+        }
+        Event::Window(window::Event::Unfocused) => Some(Message::Sidebar(
+            SidebarMsg::ModifiersChanged(keyboard::Modifiers::default()),
+        )),
+        _ => None,
+    }
+}
+
+/// With collections multi-selected: Delete asks to delete them all, Escape
+/// clears the selection. Keys a focused text field consumed are ignored.
+fn collection_selection_keys(
+    event: Event,
+    status: event::Status,
+    _window: window::Id,
+) -> Option<Message> {
+    use crate::message::SidebarMsg;
+    use keyboard::key::Named;
+    if status == event::Status::Captured {
+        return None;
+    }
+    let Event::Keyboard(keyboard::Event::KeyPressed { key, .. }) = event else {
+        return None;
+    };
+    match key.as_ref() {
+        keyboard::Key::Named(Named::Delete) => {
+            Some(Message::Sidebar(SidebarMsg::DeleteSelectedCollections))
+        }
+        keyboard::Key::Named(Named::Escape) => {
+            Some(Message::Sidebar(SidebarMsg::CollectionSelectionCleared))
+        }
+        _ => None,
+    }
+}
+
 fn collection_delete_keys(
     event: Event,
     _status: event::Status,
@@ -150,17 +198,39 @@ fn request_delete_keys(
     }
 }
 
+/// Escape cancels, Enter confirms the example delete dialog.
+fn example_delete_keys(
+    event: Event,
+    _status: event::Status,
+    _window: window::Id,
+) -> Option<Message> {
+    use crate::message::example::ExampleMsg;
+    match event {
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(keyboard::key::Named::Escape),
+            ..
+        }) => Some(Message::Example(ExampleMsg::DeleteCancelled)),
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(keyboard::key::Named::Enter),
+            ..
+        }) => Some(Message::Example(ExampleMsg::DeleteConfirmed)),
+        _ => None,
+    }
+}
+
 /// Identity + inputs for a tab's WebSocket subscription. `Hash` drives subscription
 /// identity, so the stream is kept alive while a tab stays connected.
 #[derive(Hash)]
 struct WsConn {
     tab_id: String,
+    connection_id: uuid::Uuid,
     url: String,
 }
 
 fn ws_stream(conn: &WsConn) -> impl iced::futures::Stream<Item = Message> + use<> {
     let url = conn.url.clone();
     let tab_id = conn.tab_id.clone();
+    let connection_id = conn.connection_id;
     iced::stream::channel(
         4,
         move |mut output: iced::futures::channel::mpsc::Sender<Message>| async move {
@@ -171,6 +241,7 @@ fn ws_stream(conn: &WsConn) -> impl iced::futures::Stream<Item = Message> + use<
                     let _ = output
                         .send(Message::WebSocket(WsMsg::Handshake {
                             tab_id: tab_id.clone(),
+                            connection_id,
                             sender: out_tx,
                         }))
                         .await;
@@ -185,10 +256,10 @@ fn ws_stream(conn: &WsConn) -> impl iced::futures::Stream<Item = Message> + use<
                             event = rx.recv() => {
                                 match event {
                                     Some(WsEvent::Text(t)) => {
-                                        let _ = output.send(Message::WebSocket(WsMsg::TextFrame { tab_id: tab_id.clone(), text: t })).await;
+                                        let _ = output.send(Message::WebSocket(WsMsg::TextFrame { tab_id: tab_id.clone(), connection_id, text: t })).await;
                                     }
                                     Some(WsEvent::Disconnected) | None => {
-                                        let _ = output.send(Message::WebSocket(WsMsg::Disconnected { tab_id: tab_id.clone() })).await;
+                                        let _ = output.send(Message::WebSocket(WsMsg::Disconnected { tab_id: tab_id.clone(), connection_id })).await;
                                         break;
                                     }
                                     _ => {}
@@ -201,6 +272,7 @@ fn ws_stream(conn: &WsConn) -> impl iced::futures::Stream<Item = Message> + use<
                     let _ = output
                         .send(Message::WebSocket(WsMsg::Error {
                             tab_id: tab_id.clone(),
+                            connection_id,
                             error: e,
                         }))
                         .await;

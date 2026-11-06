@@ -63,7 +63,8 @@ pub fn scan_commit(repo_path: &Path, commit_id: &str, repo_key: &str) -> Result<
 
     let mut blobs = Vec::new();
     let mut visited = 0usize;
-    collect_tree(&repo, &tree, "", &mut visited, &mut blobs);
+    let mut remaining = crate::consts::IMPORT_TOTAL_LIMIT;
+    collect_tree(&repo, &tree, "", &mut visited, &mut blobs, &mut remaining);
 
     let mut out = RepoScan::default();
     let mut budget = 0usize;
@@ -173,10 +174,11 @@ fn collect_tree(
     prefix: &str,
     visited: &mut usize,
     blobs: &mut Vec<(String, Vec<u8>)>,
+    remaining: &mut usize,
 ) {
     for entry in tree.iter() {
         *visited += 1;
-        if *visited > MAX_ENTRIES {
+        if *visited > MAX_ENTRIES || *remaining == 0 {
             return;
         }
         let name = entry.name().unwrap_or_default();
@@ -191,16 +193,33 @@ fn collect_tree(
         match entry.kind() {
             Some(git2::ObjectType::Tree) => {
                 if let Ok(sub) = repo.find_tree(entry.id()) {
-                    collect_tree(repo, &sub, &path, visited, blobs);
+                    collect_tree(repo, &sub, &path, visited, blobs, remaining);
                 }
             }
             Some(git2::ObjectType::Blob) => {
                 if !candidate(Path::new(name)) {
                     continue;
                 }
-                if let Ok(blob) = repo.find_blob(entry.id())
-                    && blob.size() <= crate::consts::IMPORT_FILE_LIMIT
+                // Read the object header before loading/decompressing its body.
+                // The same remaining budget is shared through every subtree.
+                let Ok(odb) = repo.odb() else {
+                    continue;
+                };
+                let Ok((size, kind)) = odb.read_header(entry.id()) else {
+                    continue;
+                };
+                if kind != git2::ObjectType::Blob
+                    || size > crate::consts::IMPORT_FILE_LIMIT
+                    || size > *remaining
                 {
+                    continue;
+                }
+                if let Ok(blob) = repo.find_blob(entry.id()) {
+                    // Defend the copy boundary even if a custom ODB disagrees.
+                    if blob.size() != size {
+                        continue;
+                    }
+                    *remaining -= size;
                     blobs.push((path, blob.content().to_vec()));
                 }
             }
@@ -271,6 +290,113 @@ mod tests {
         format!(
             r#"{{"info":{{"_postman_id":"{id}","name":"{name}","schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"}},"item":[],"variable":[{{"key":"accessToken","value":"t"}}]}}"#
         )
+    }
+
+    #[test]
+    fn security_commit_budget_is_shared_by_subtrees_and_skips_nonfitting_blobs() {
+        let dir = temp_dir("nested-budget");
+        let repo = git2::Repository::init(&dir).unwrap();
+        let small = repo.blob(&[b'x'; 32]).unwrap();
+        let large = repo.blob(&[b'y'; 80]).unwrap();
+        let mut child = repo.treebuilder(None).unwrap();
+        child.insert("a-large.json", large, 0o100644).unwrap();
+        child.insert("b-small.json", small, 0o100644).unwrap();
+        let child_id = child.write().unwrap();
+        let mut root = repo.treebuilder(None).unwrap();
+        for name in ["first", "second", "third"] {
+            root.insert(name, child_id, 0o040000).unwrap();
+        }
+        let tree_id = root.write().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let mut blobs = Vec::new();
+        let mut remaining = 64;
+        collect_tree(&repo, &tree, "", &mut 0, &mut blobs, &mut remaining);
+        assert_eq!(
+            blobs
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            ["first/b-small.json", "second/b-small.json"]
+        );
+        assert_eq!(
+            blobs.iter().map(|(_, bytes)| bytes.len()).sum::<usize>(),
+            64
+        );
+        assert_eq!(remaining, 0);
+        drop(tree);
+        drop(root);
+        drop(child);
+        drop(repo);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn security_bounded_commit_scan_still_restores_foreign_collections() {
+        let dir = temp_dir("restore-bounded");
+        let repo = git2::Repository::init(&dir).unwrap();
+        let mut builder = repo.treebuilder(None).unwrap();
+        for (id, name) in [("id-a", "A"), ("id-b", "B")] {
+            let blob = repo.blob(postman(id, name).as_bytes()).unwrap();
+            builder
+                .insert(format!("{name}.json"), blob, 0o100644)
+                .unwrap();
+        }
+        let tree_id = builder.write().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("Synthetic QA", "synthetic@example.invalid").unwrap();
+        let commit = repo
+            .commit(
+                Some("HEAD"),
+                &sig,
+                &sig,
+                "synthetic collections",
+                &tree,
+                &[],
+            )
+            .unwrap();
+        let scan = scan_commit(&dir, &commit.to_string(), "synthetic").unwrap();
+        assert_eq!(
+            scan.collections
+                .iter()
+                .map(|c| c.collection.id.as_str())
+                .collect::<Vec<_>>(),
+            ["id-a", "id-b"]
+        );
+        assert_eq!(scan.environments.len(), 2);
+        assert!(scan.is_protected());
+        drop(tree);
+        drop(builder);
+        drop(repo);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn security_commit_blob_budget_is_enforced_before_copying() {
+        let dir = temp_dir("blob-budget");
+        let repo = git2::Repository::init(&dir).unwrap();
+        // Nine references to one tiny blob reproduce aggregate growth without
+        // allocating hundreds of MiB or attempting to exhaust the host.
+        let oid = repo.blob(&[b'x'; 32]).unwrap();
+        let mut builder = repo.treebuilder(None).unwrap();
+        for i in 0..9 {
+            builder.insert(format!("{i}.json"), oid, 0o100644).unwrap();
+        }
+        let tree_id = builder.write().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let mut blobs = Vec::new();
+        let mut remaining = 128;
+        collect_tree(&repo, &tree, "", &mut 0, &mut blobs, &mut remaining);
+        let retained: usize = blobs.iter().map(|(_, bytes)| bytes.len()).sum();
+        assert!(
+            retained <= 128,
+            "retained {retained} bytes before the aggregate budget check"
+        );
+        assert_eq!(blobs.len(), 4);
+        assert_eq!(remaining, 0);
+        drop(tree);
+        drop(builder);
+        drop(repo);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

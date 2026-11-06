@@ -43,7 +43,7 @@ pub fn view<'a>(
             |a| Message::Request(RequestMsg::ParamsBulkEdited(a)),
             Message::Request(RequestMsg::ParamsBulkToggle),
         ),
-        None => scrollable(column![param_table(&tab.params, env)])
+        None => scrollable(column![param_table(tab, env)])
             .height(Length::Fill)
             .direction(iced::widget::scrollable::Direction::Vertical(
                 crate::ui::theme::grabbable_scrollbar(),
@@ -58,12 +58,34 @@ pub fn view<'a>(
 }
 
 fn param_table<'a>(
-    items: &'a [crate::domain::request::KeyValue],
+    tab: &'a RequestTabState,
     env: Option<&'a crate::domain::environment::AppEnvironment>,
 ) -> Element<'a, Message> {
+    use crate::state::tabs::SuggestField;
     let mut rows: Vec<Element<Message>> = vec![kv_table::head("Key", "Value")];
+    let open = tab.header_suggest;
+    let list = tab.header_suggestions(env);
+    let selected = open.map_or(0, |s| s.selected);
 
-    for (i, item) in items.iter().enumerate() {
+    for (i, item) in tab.params.iter().enumerate() {
+        let shown = |field| {
+            if open.is_some_and(|s| s.row == i && s.field == field) {
+                &list[..]
+            } else {
+                &[]
+            }
+        };
+        let cell = |field, el| {
+            super::headers::suggest_cell(
+                el,
+                i,
+                field,
+                shown(field),
+                selected,
+                tab.var_card.as_ref(),
+                env,
+            )
+        };
         let cells = kv_table::kv_row(
             checkbox(item.enabled)
                 .on_toggle(move |_| Message::Request(RequestMsg::ParamToggled(i)))
@@ -71,12 +93,30 @@ fn param_table<'a>(
                 .spacing(0)
                 .style(crate::ui::styles::checkbox)
                 .into(),
-            super::cell::text_cell("Key", &item.key, 12.0, [5, 7], Length::Fill, move |s| {
-                Message::Request(RequestMsg::ParamKeyChanged(i, s))
-            }),
-            super::cell::text_cell("Value", &item.value, 12.0, [5, 7], Length::Fill, move |s| {
-                Message::Request(RequestMsg::ParamValueChanged(i, s))
-            }),
+            cell(
+                SuggestField::ParamKey,
+                super::cell::variable_field(
+                    tab,
+                    i,
+                    SuggestField::ParamKey,
+                    "Key",
+                    super::cell::Frame::Cell,
+                    env,
+                    move |s| Message::Request(RequestMsg::ParamKeyChanged(i, s)),
+                ),
+            ),
+            cell(
+                SuggestField::ParamValue,
+                super::cell::variable_field(
+                    tab,
+                    i,
+                    SuggestField::ParamValue,
+                    "Value",
+                    super::cell::Frame::Cell,
+                    env,
+                    move |s| Message::Request(RequestMsg::ParamValueChanged(i, s)),
+                ),
+            ),
             kv_table::remove_button(Message::Request(RequestMsg::ParamRemoved(i))),
         );
 

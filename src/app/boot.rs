@@ -136,6 +136,7 @@ pub(crate) fn init_at(data_dir: PathBuf) -> (AppState, Task<Message>) {
                 t.body_type = snap.body_type.clone();
                 t.body_editor =
                     make_code_editor(&snap.body, body_syntax_for(&snap.body_type, &snap.body));
+                t.refresh_body_vars();
                 t.graphql_variables_editor = make_code_editor(&snap.graphql_variables, "json");
                 t.form_fields = snap.form_fields;
                 t.auth_type = snap.auth_type;
@@ -184,6 +185,9 @@ pub(crate) fn init_at(data_dir: PathBuf) -> (AppState, Task<Message>) {
         browser_previews: Vec::new(),
         environment_cell: None,
         console_open: false,
+        console_height: 280.0,
+        collection_docs: None,
+        console: Default::default(),
         notification: storage_error.map(|error| crate::state::notifications::Toast {
             kind: crate::state::notifications::ToastKind::Error,
             placement: crate::state::notifications::ToastPlacement::BottomRight,

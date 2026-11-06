@@ -114,6 +114,12 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
                     .then_some(Message::Response(ResponseMsg::OpenBodyInBrowser)),
                 false,
             ),
+            menu_item(
+                Some(icons::eraser()),
+                "Clear response",
+                Some(Message::Response(ResponseMsg::ClearResponse)),
+                false,
+            ),
         ];
         right = right.push(mini::anchored_menu(
             mini::icon_button(

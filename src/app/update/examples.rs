@@ -151,6 +151,28 @@ pub(super) fn handle(state: &mut AppState, msg: ExampleMsg) -> Task<Message> {
     Task::none()
 }
 
+/// Remove an example from storage and the tree, and its editor if it is the
+/// open one. Another example's unsaved editor stays untouched.
+fn delete_example(state: &mut AppState, id: &str) -> Result<(), String> {
+    storage::examples::delete(
+        state.db.as_ref().ok_or("Local storage is unavailable.")?,
+        id,
+    )?;
+    for items in state.examples.items.values_mut() {
+        items.retain(|e| e.id != id);
+    }
+    if state
+        .examples
+        .editor
+        .as_ref()
+        .is_some_and(|e| e.data.id == id)
+    {
+        state.examples.editor = None;
+    }
+    state.status_message = Some("Example deleted.".into());
+    Ok(())
+}
+
 fn apply(state: &mut AppState, msg: ExampleMsg) -> Result<(), String> {
     match msg {
         ExampleMsg::Create(id) => {
@@ -254,16 +276,17 @@ fn apply(state: &mut AppState, msg: ExampleMsg) -> Result<(), String> {
                     return Ok(());
                 }
                 let id = editor.data.id.clone();
-                let parent_id = editor.data.request_id.clone();
-                storage::examples::delete(
-                    state.db.as_ref().ok_or("Local storage is unavailable.")?,
-                    &id,
-                )?;
-                if let Some(items) = state.examples.items.get_mut(&parent_id) {
-                    items.retain(|e| e.id != id);
-                }
-                state.examples.editor = None;
-                state.status_message = Some("Example deleted.".into());
+                delete_example(state, &id)?;
+            }
+        }
+        ExampleMsg::DeleteAsked(id) => {
+            state.sidebar.context_menu = None;
+            state.examples.delete_asked = Some(id);
+        }
+        ExampleMsg::DeleteCancelled => state.examples.delete_asked = None,
+        ExampleMsg::DeleteConfirmed => {
+            if let Some(id) = state.examples.delete_asked.take() {
+                delete_example(state, &id)?;
             }
         }
         other => {
@@ -877,6 +900,26 @@ mod tests {
     }
 
     #[test]
+    fn clicking_the_request_row_leaves_a_saved_example_but_not_a_dirty_one() {
+        let (mut s, dir, id) = setup();
+        apply(&mut s, ExampleMsg::Create(id.clone())).unwrap();
+        apply(&mut s, ExampleMsg::Name("Unsaved example".into())).unwrap();
+        let click =
+            |id: &str| Message::Sidebar(crate::message::SidebarMsg::ItemDragStart(id.to_owned()));
+        let _ = super::super::update(&mut s, click(&id));
+        assert!(s.examples.editor.as_ref().unwrap().confirm_discard);
+        let _ = super::super::update(
+            &mut s,
+            Message::Request(crate::message::RequestMsg::SaveRequest),
+        );
+        assert!(!dirty(&s));
+        let _ = super::super::update(&mut s, click(&id));
+        assert!(s.examples.editor.is_none());
+        drop(s);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn endpoint_example_send_and_navigation_do_not_touch_hidden_request() {
         let (mut s, dir, id) = setup();
         apply(&mut s, ExampleMsg::Create(id)).unwrap();
@@ -894,6 +937,43 @@ mod tests {
         );
         assert!(!dirty(&s));
         assert!(!s.save_dialog_open);
+        drop(s);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn sidebar_delete_asks_first_and_leaves_another_open_example_alone() {
+        let (mut s, dir, id) = setup();
+        apply(&mut s, ExampleMsg::Create(id.clone())).unwrap();
+        let first = s.examples.items[&id][0].id.clone();
+        s.examples.editor = None;
+        apply(&mut s, ExampleMsg::Create(id.clone())).unwrap();
+        let open = s.examples.editor.as_ref().unwrap().data.id.clone();
+        assert_ne!(first, open);
+
+        s.sidebar.context_menu = Some(first.clone());
+        apply(&mut s, ExampleMsg::DeleteAsked(first.clone())).unwrap();
+        assert!(s.sidebar.context_menu.is_none());
+        apply(&mut s, ExampleMsg::DeleteCancelled).unwrap();
+        assert_eq!(s.examples.items[&id].len(), 2, "cancel keeps it");
+
+        apply(&mut s, ExampleMsg::DeleteAsked(first.clone())).unwrap();
+        apply(&mut s, ExampleMsg::DeleteConfirmed).unwrap();
+        assert!(s.examples.delete_asked.is_none());
+        assert_eq!(s.examples.items[&id].len(), 1);
+        assert_eq!(s.examples.items[&id][0].id, open);
+        assert!(s.examples.editor.is_some(), "the other editor stays open");
+        assert_eq!(
+            storage::examples::load(s.db.as_ref().unwrap())
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // Deleting the open one closes its editor.
+        apply(&mut s, ExampleMsg::DeleteAsked(open)).unwrap();
+        apply(&mut s, ExampleMsg::DeleteConfirmed).unwrap();
+        assert!(s.examples.editor.is_none());
         drop(s);
         let _ = std::fs::remove_dir_all(dir);
     }
