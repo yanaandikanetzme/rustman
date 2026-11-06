@@ -96,6 +96,82 @@ impl Fail {
     }
 }
 
+/// What the script editor offers while typing: the supported API only, so a
+/// suggestion is never something the runner then refuses.
+const COMPLETIONS: &[(&str, &str)] = &[
+    ("pm", "Postman scripting API"),
+    ("pm.environment.set", "Set an environment variable"),
+    ("pm.environment.get", "Read an environment variable"),
+    ("pm.environment.has", "Whether a variable exists"),
+    ("pm.collectionVariables.set", "Set a variable"),
+    ("pm.collectionVariables.get", "Read a variable"),
+    ("pm.globals.set", "Set a variable"),
+    ("pm.globals.get", "Read a variable"),
+    ("pm.variables.set", "Set a variable"),
+    ("pm.variables.get", "Read a variable"),
+    ("pm.response.json", "The response body, parsed"),
+    ("pm.response.text", "The response body"),
+    ("pm.response.code", "The response status code"),
+    ("pm.response.headers.get", "A response header"),
+    ("pm.response.to.have.status", "Assert the status code"),
+    ("pm.response.to.have.header", "Assert a response header"),
+    ("pm.request.url", "The request URL"),
+    ("pm.request.body", "The request body"),
+    ("pm.request.headers.add", "Add a request header"),
+    ("pm.test", "Define a test"),
+    ("pm.expect", "Start an assertion"),
+    ("responseBody", "The response body"),
+    ("responseCode.code", "The response status code"),
+    ("console.log", "Write to the Console"),
+    ("console.error", "Write to the Console"),
+    ("JSON.parse", "Parse JSON text"),
+    ("JSON.stringify", "Turn a value into JSON text"),
+    ("parseInt", "Text to a whole number"),
+    ("parseFloat", "Text to a number"),
+    ("Math.round", "Round a number"),
+    ("Date.now", "Milliseconds since 1970"),
+];
+
+/// Most suggestions the list shows.
+const MAX_COMPLETIONS: usize = 8;
+
+/// Suggestions for the word ending at char column `caret` of `line`, and the
+/// length of that word in chars. `None` inside a string or without a word.
+pub fn completions_at(
+    line: &str,
+    caret: usize,
+) -> Option<(Vec<&'static (&'static str, &'static str)>, usize)> {
+    let chars: Vec<char> = line.chars().collect();
+    let before = chars.get(..caret)?;
+    let mut quote = None;
+    let mut escaped = false;
+    for &c in before {
+        match quote {
+            _ if escaped => escaped = false,
+            Some(_) if c == '\\' => escaped = true,
+            Some(q) if c == q => quote = None,
+            None if matches!(c, '"' | '\'' | '`') => quote = Some(c),
+            _ => {}
+        }
+    }
+    if quote.is_some() {
+        return None;
+    }
+    let is_word = |c: &&char| c.is_alphanumeric() || matches!(**c, '_' | '$' | '.');
+    let length = before.iter().rev().take_while(is_word).count();
+    if length == 0 {
+        return None;
+    }
+    let word: String = before[caret - length..].iter().collect();
+    let lower = word.to_lowercase();
+    let list: Vec<_> = COMPLETIONS
+        .iter()
+        .filter(|(label, _)| label.to_lowercase().starts_with(&lower) && *label != word)
+        .take(MAX_COMPLETIONS)
+        .collect();
+    (!list.is_empty()).then_some((list, length))
+}
+
 // ---- Lexer ----------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1630,6 +1706,33 @@ mod tests {
         );
         let deep = format!("var a = {}1{};", "(".repeat(5000), ")".repeat(5000));
         assert!(run(&deep, after("{}")).unwrap_err().contains("nested"));
+    }
+
+    #[test]
+    fn completions_follow_the_word_and_stay_out_of_strings() {
+        let (list, length) = completions_at("  pm.env", 8).unwrap();
+        assert_eq!(length, 6);
+        assert_eq!(list[0].0, "pm.environment.set");
+        assert!(list.iter().all(|(l, _)| l.starts_with("pm.environment")));
+        assert_eq!(completions_at("json", 4).unwrap().0[0].0, "JSON.parse");
+        assert!(completions_at("x = \"pm", 7).is_none());
+        assert!(completions_at("zzz", 3).is_none());
+        assert!(completions_at("", 0).is_none());
+        assert!(completions_at("pm.test", 7).is_none(), "already complete");
+        // Every suggestion the runner would then refuse would be a lie.
+        for (label, _) in COMPLETIONS {
+            let source = match *label {
+                "pm" => continue,
+                "pm.expect" => "pm.expect(1).to.be.ok".to_owned(),
+                "pm.test" => "pm.test('a', function () {})".to_owned(),
+                "pm.response.code" | "pm.request.url" | "pm.request.body" | "responseBody"
+                | "responseCode.code" => format!("var a = {label};"),
+                _ => format!("{label}('a', 'b');"),
+            };
+            if let Err(error) = run(&source, after("{}")) {
+                assert!(!error.contains("not supported"), "{label}: {error}");
+            }
+        }
     }
 
     #[test]

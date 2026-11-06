@@ -120,6 +120,17 @@ impl std::fmt::Display for BodyLang {
     }
 }
 
+/// Scripts of both languages read fine as JavaScript.
+const SCRIPT_SYNTAX: &str = "js";
+
+/// Which script the Scripts tab shows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ScriptPhase {
+    #[default]
+    Before,
+    After,
+}
+
 /// The body `{{variable}}` under the mouse, in the editor's viewport pixels.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BodyHover {
@@ -257,6 +268,9 @@ pub struct RequestTabState {
     pub jwt_secret: String,
     pub jwt_subject: String,
     pub jwt_algo: String,
+    pub script_phase: ScriptPhase,
+    /// Open autocomplete of the shown script editor.
+    pub script_completion: Option<BodyCompletion>,
     pub pre_request_editor: CodeEditor,
     pub test_editor: CodeEditor,
     pub active_request_tab: crate::message::RequestTab,
@@ -407,8 +421,10 @@ impl RequestTabState {
             jwt_secret: String::new(),
             jwt_subject: String::new(),
             jwt_algo: "HS256".to_owned(),
-            pre_request_editor: make_code_editor("", "txt"),
-            test_editor: make_code_editor("", "txt"),
+            script_phase: ScriptPhase::default(),
+            script_completion: None,
+            pre_request_editor: make_code_editor("", SCRIPT_SYNTAX),
+            test_editor: make_code_editor("", SCRIPT_SYNTAX),
             active_request_tab: crate::message::RequestTab::Params,
             active_response_tab: crate::message::ResponseTab::Body,
             ws: WsState::default(),
@@ -568,6 +584,47 @@ impl RequestTabState {
         } else {
             BodyLang::Text
         }
+    }
+
+    /// The script editor the Scripts tab shows.
+    pub fn script_editor(&self) -> &CodeEditor {
+        match self.script_phase {
+            ScriptPhase::Before => &self.pre_request_editor,
+            ScriptPhase::After => &self.test_editor,
+        }
+    }
+
+    pub fn script_editor_mut(&mut self) -> &mut CodeEditor {
+        match self.script_phase {
+            ScriptPhase::Before => &mut self.pre_request_editor,
+            ScriptPhase::After => &mut self.test_editor,
+        }
+    }
+
+    /// Open, update or close the script autocomplete for the caret's word.
+    pub fn refresh_script_completion(&mut self) {
+        use crate::services::header_suggest::{Source, Suggestion};
+        let editor = self.script_editor();
+        let (line_no, column) = editor.cursor_position();
+        let content = editor.content();
+        self.script_completion = content
+            .lines()
+            .nth(line_no)
+            .and_then(|line| crate::services::pm_script::completions_at(line, column))
+            .map(|(list, back)| BodyCompletion {
+                items: list
+                    .into_iter()
+                    .map(|(label, detail)| Suggestion {
+                        label: (*label).to_owned(),
+                        apply: (*label).to_owned(),
+                        source: Source::Plain,
+                        detail,
+                    })
+                    .collect(),
+                selected: 0,
+                back,
+                forward: 0,
+            });
     }
 
     /// Forget the response and everything derived from it. The test results
@@ -938,10 +995,10 @@ impl RequestTabState {
         self.jwt_subject = req.jwt_subject.clone();
         self.jwt_algo = req.jwt_algo.clone();
         if self.pre_request_editor.content() != req.pre_request_script {
-            self.pre_request_editor = make_code_editor(&req.pre_request_script, "txt");
+            self.pre_request_editor = make_code_editor(&req.pre_request_script, SCRIPT_SYNTAX);
         }
         if self.test_editor.content() != req.test_script {
-            self.test_editor = make_code_editor(&req.test_script, "txt");
+            self.test_editor = make_code_editor(&req.test_script, SCRIPT_SYNTAX);
         }
         self.saved_as = Some((req.collection_id.clone(), req.id.clone()));
     }

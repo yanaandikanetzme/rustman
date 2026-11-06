@@ -56,6 +56,17 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
     }
     if matches!(
         &msg,
+        RequestMsg::ScriptPhaseSelected(_)
+            | RequestMsg::ScriptImportEnabled
+            | RequestMsg::ScriptCompletionMoved(_)
+            | RequestMsg::ScriptCompletionAccepted
+            | RequestMsg::ScriptCompletionPicked(_)
+            | RequestMsg::ScriptCompletionClosed
+    ) {
+        return handle_script_ui(state, msg);
+    }
+    if matches!(
+        &msg,
         RequestMsg::BodyHovered(_)
             | RequestMsg::VarCardDue(_)
             | RequestMsg::VarCardHover(_)
@@ -111,6 +122,12 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
         | RequestMsg::HeaderVarHovered(..)
         | RequestMsg::HeaderVarDue(..)
         | RequestMsg::VarCardLeaveDue
+        | RequestMsg::ScriptPhaseSelected(_)
+        | RequestMsg::ScriptImportEnabled
+        | RequestMsg::ScriptCompletionMoved(_)
+        | RequestMsg::ScriptCompletionAccepted
+        | RequestMsg::ScriptCompletionPicked(_)
+        | RequestMsg::ScriptCompletionClosed
         | RequestMsg::BodyCompletionMoved(_)
         | RequestMsg::BodyCompletionAccepted
         | RequestMsg::BodyCompletionPicked(_)
@@ -323,19 +340,23 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
             if editor_message_edits_content(&msg) {
                 tab.modified = true;
             }
-            return tab
+            let task = tab
                 .pre_request_editor
                 .update(&msg)
                 .map(|m| Message::Request(RequestMsg::PreRequestScriptEdited(m)));
+            after_script_edit(tab, &msg);
+            return task;
         }
         RequestMsg::TestScriptEdited(msg) => {
             if editor_message_edits_content(&msg) {
                 tab.modified = true;
             }
-            return tab
+            let task = tab
                 .test_editor
                 .update(&msg)
                 .map(|m| Message::Request(RequestMsg::TestScriptEdited(m)));
+            after_script_edit(tab, &msg);
+            return task;
         }
         RequestMsg::NewTab => {
             state.tabs.new_tab();
@@ -1778,6 +1799,80 @@ fn handle_var_card(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
     Task::none()
 }
 
+/// Typing updates the script autocomplete, moving the caret closes it.
+fn after_script_edit(tab: &mut RequestTabState, msg: &iced_code_editor::Message) {
+    use iced_code_editor::Message as Editor;
+    match msg {
+        Editor::CharacterInput(_) | Editor::Backspace | Editor::Delete => {
+            tab.refresh_script_completion();
+        }
+        Editor::Scrolled(_) | Editor::HorizontalScrolled(_) | Editor::MouseHover(_) => {}
+        _ => tab.script_completion = None,
+    }
+}
+
+fn handle_script_ui(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
+    use crate::state::tabs::ScriptPhase;
+    let tab = state.tabs.active_tab_mut();
+    let apply = match msg {
+        RequestMsg::ScriptPhaseSelected(phase) => {
+            tab.script_phase = phase;
+            tab.script_completion = None;
+            return Task::none();
+        }
+        RequestMsg::ScriptImportEnabled => {
+            let source = crate::services::import::postman::enable_imported_script(
+                &tab.script_editor().content(),
+            );
+            if let Some(source) = source {
+                *tab.script_editor_mut() = crate::state::tabs::make_code_editor(&source, "js");
+                tab.script_completion = None;
+                tab.modified = true;
+            }
+            return Task::none();
+        }
+        RequestMsg::ScriptCompletionClosed => {
+            tab.script_completion = None;
+            return Task::none();
+        }
+        RequestMsg::ScriptCompletionMoved(down) => {
+            if let Some(c) = tab.script_completion.as_mut() {
+                let n = c.items.len().max(1);
+                c.selected = if down {
+                    (c.selected + 1) % n
+                } else {
+                    (c.selected + n - 1) % n
+                };
+            }
+            return Task::none();
+        }
+        RequestMsg::ScriptCompletionAccepted => tab
+            .script_completion
+            .as_ref()
+            .and_then(|c| c.items.get(c.selected))
+            .map(|s| s.apply.clone()),
+        RequestMsg::ScriptCompletionPicked(apply) => Some(apply),
+        _ => None,
+    };
+    let (Some(apply), Some(completion)) = (apply, tab.script_completion.take()) else {
+        return Task::none();
+    };
+    // Through the editor's own commands, so undo keeps working.
+    let phase = tab.script_phase;
+    let editor = tab.script_editor_mut();
+    for _ in 0..completion.back {
+        let _ = editor.update(&iced_code_editor::Message::Backspace);
+    }
+    let task = editor.update(&iced_code_editor::Message::Paste(apply));
+    tab.modified = true;
+    task.map(move |m| {
+        Message::Request(match phase {
+            ScriptPhase::Before => RequestMsg::PreRequestScriptEdited(m),
+            ScriptPhase::After => RequestMsg::TestScriptEdited(m),
+        })
+    })
+}
+
 fn handle_body_completion(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
     let tab = state.tabs.active_tab_mut();
     match msg {
@@ -2436,6 +2531,67 @@ mod header_var_card_tests {
         let _ = handle(&mut state, RequestMsg::HeaderVarHovered(r, f, false));
         let _ = handle(&mut state, RequestMsg::HeaderVarDue(r, f));
         assert!(state.tabs.active_tab().var_card.is_none());
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod script_ui_tests {
+    use super::*;
+    use crate::state::tabs::ScriptPhase;
+    use iced_code_editor::Message as Editor;
+
+    fn setup() -> (AppState, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("rustman-scripts-{}", uuid::Uuid::new_v4()));
+        let (state, _) = crate::app::boot::init_at(dir.clone());
+        (state, dir)
+    }
+
+    #[test]
+    fn the_rail_switches_editors_and_a_pick_completes_the_word() {
+        let (mut state, dir) = setup();
+        let _ = handle(
+            &mut state,
+            RequestMsg::ScriptPhaseSelected(ScriptPhase::After),
+        );
+        // A throwaway char and Backspace: typing itself needs the
+        // process-wide editor focus, which parallel tests would race for.
+        let _ = handle(
+            &mut state,
+            RequestMsg::TestScriptEdited(Editor::Paste("x = pm.envz".into())),
+        );
+        let _ = handle(&mut state, RequestMsg::TestScriptEdited(Editor::Backspace));
+        let list = state.tabs.active_tab().script_completion.clone().unwrap();
+        assert_eq!(list.items[0].label, "pm.environment.set");
+
+        let _ = handle(&mut state, RequestMsg::ScriptCompletionMoved(true));
+        let _ = handle(&mut state, RequestMsg::ScriptCompletionAccepted);
+        let tab = state.tabs.active_tab();
+        assert_eq!(tab.test_editor.content(), "x = pm.environment.get");
+        assert!(tab.pre_request_editor.content().is_empty());
+        assert!(tab.script_completion.is_none());
+        assert!(tab.modified);
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn enabling_an_imported_script_uncomments_only_the_shown_phase() {
+        let (mut state, dir) = setup();
+        let marker = crate::services::import::postman::SCRIPT_MARKER;
+        let kept = format!("{marker} — port it)\n// var a = 1;\n");
+        let tab = state.tabs.active_tab_mut();
+        tab.test_editor = crate::state::tabs::make_code_editor(&kept, "js");
+        tab.pre_request_editor = crate::state::tabs::make_code_editor(&kept, "js");
+        tab.script_phase = ScriptPhase::After;
+
+        let _ = handle(&mut state, RequestMsg::ScriptImportEnabled);
+
+        let tab = state.tabs.active_tab();
+        assert_eq!(tab.test_editor.content(), "var a = 1;");
+        assert_eq!(tab.pre_request_editor.content(), kept);
+        assert!(tab.modified);
         drop(state);
         let _ = std::fs::remove_dir_all(dir);
     }

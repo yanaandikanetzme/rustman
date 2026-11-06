@@ -295,6 +295,18 @@ pub enum RequestMsg {
     FormFieldPickFile(usize), // open file dialog for row index
     FormFieldFilePicked(usize, String, String), // index, filename, base64_data
     // Scripts
+    /// Before request / After response on the Scripts rail.
+    ScriptPhaseSelected(crate::state::tabs::ScriptPhase),
+    /// Run the imported script kept as comments: uncomment it.
+    ScriptImportEnabled,
+    /// Arrow keys in the script autocomplete (`true` = down).
+    ScriptCompletionMoved(bool),
+    /// Enter in that list: apply the highlighted item.
+    ScriptCompletionAccepted,
+    /// An item was clicked: the text to insert.
+    ScriptCompletionPicked(String),
+    /// Escape or a click elsewhere closed the list.
+    ScriptCompletionClosed,
     PreRequestScriptEdited(iced_code_editor::Message),
     TestScriptEdited(iced_code_editor::Message),
     // WebSocket

@@ -80,6 +80,9 @@ pub(crate) fn update(state: &mut AppState, message: Message) -> Task<Message> {
                         | crate::message::RequestMsg::BodyHovered(_)
                         | crate::message::RequestMsg::BodyCompletionMoved(_)
                         | crate::message::RequestMsg::BodyCompletionClosed
+                        | crate::message::RequestMsg::ScriptPhaseSelected(_)
+                        | crate::message::RequestMsg::ScriptCompletionMoved(_)
+                        | crate::message::RequestMsg::ScriptCompletionClosed
                         | crate::message::RequestMsg::VarCardDue(_)
                         | crate::message::RequestMsg::VarCardHover(_)
                         | crate::message::RequestMsg::VarCardPinned
@@ -237,6 +240,9 @@ pub(crate) fn marks_session_dirty(message: &Message) -> bool {
                 | crate::message::RequestMsg::BodyHovered(_)
                 | crate::message::RequestMsg::BodyCompletionMoved(_)
                 | crate::message::RequestMsg::BodyCompletionClosed
+                | crate::message::RequestMsg::ScriptPhaseSelected(_)
+                | crate::message::RequestMsg::ScriptCompletionMoved(_)
+                | crate::message::RequestMsg::ScriptCompletionClosed
                 | crate::message::RequestMsg::VarCardDue(_)
                 | crate::message::RequestMsg::VarCardHover(_)
                 | crate::message::RequestMsg::VarCardPinned
