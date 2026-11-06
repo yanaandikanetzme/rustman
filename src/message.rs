@@ -185,6 +185,9 @@ pub enum RequestMsg {
     HeaderKeyChanged(usize, String),
     HeaderValueChanged(usize, String),
     HeaderDescriptionChanged(usize, String),
+    /// Mouse over the body editor (`None` = left it): resolves the
+    /// `{{variable}}` under it for the hover card.
+    BodyHovered(Option<iced::Point>),
     HeaderAdded,
     HeaderRemoved(usize),
     /// A Headers cell was clicked: open its autocomplete list.

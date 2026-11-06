@@ -21,7 +21,14 @@ pub const FORMAT_MENU: &str = "response:format";
 /// Postman's format button: a filled `{ } JSON ⌄` chip whose menu lists
 /// each format with its icon and a check on the current one; Raw sits
 /// under a divider.
-fn format_menu(current: BodyLang, open: bool) -> Element<'static, Message> {
+/// `active` is false while Preview is on: the chip then looks unselected, so
+/// only one of the two reads as the current view (Postman's behaviour).
+fn format_menu(current: BodyLang, open: bool, active: bool) -> Element<'static, Message> {
+    let fg = if active {
+        Palette::text()
+    } else {
+        Palette::text_muted()
+    };
     use crate::ui::components::molecules::menu::{menu_divider, menu_item};
     let icon = |lang: BodyLang| match lang {
         BodyLang::Json => icons::braces(),
@@ -33,11 +40,11 @@ fn format_menu(current: BodyLang, open: bool) -> Element<'static, Message> {
     let chip = button(
         container(
             row![
-                icon(current).size(12).color(Palette::text()),
+                icon(current).size(12).color(fg),
                 text(current.to_string())
                     .size(12)
                     .font(crate::ui::theme::UI_FONT_MEDIUM)
-                    .color(Palette::text()),
+                    .color(fg),
                 icons::chevron_down().size(11).color(Palette::text_muted()),
             ]
             .spacing(6)
@@ -51,14 +58,14 @@ fn format_menu(current: BodyLang, open: bool) -> Element<'static, Message> {
     ))
     .padding([0, 10])
     .style(move |_, status| iced::widget::button::Style {
-        background: Some(Background::Color(
-            if open || matches!(status, iced::widget::button::Status::Hovered) {
-                Palette::hover()
-            } else {
-                Palette::surface_high()
-            },
-        )),
-        text_color: Palette::text(),
+        background: if open || matches!(status, iced::widget::button::Status::Hovered) {
+            Some(Background::Color(Palette::hover()))
+        } else if active {
+            Some(Background::Color(Palette::surface_high()))
+        } else {
+            None
+        },
+        text_color: fg,
         border: Border {
             radius: 5.0.into(),
             ..Default::default()
@@ -191,7 +198,7 @@ pub fn view(tab: &RequestTabState, spinner_frame: u32, format_open: bool) -> Ele
 
     // Postman-style toolbar: body format menu (JSON, XML, HTML, …, Raw) and
     // Preview on the left; wrap, search and copy icons on the right.
-    let format_menu = format_menu(tab.body_lang(), format_open);
+    let format_menu = format_menu(tab.body_lang(), format_open, !preview_on);
     let preview_btn: Element<Message> = if tab.preview_available() {
         preview_button(preview_on)
     } else {

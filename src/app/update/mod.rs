@@ -77,6 +77,7 @@ pub(crate) fn update(state: &mut AppState, message: Message) -> Task<Message> {
                 | Message::Request(
                     crate::message::RequestMsg::TitleChanged(_)
                         | crate::message::RequestMsg::UrlHovered(_)
+                        | crate::message::RequestMsg::BodyHovered(_)
                         | crate::message::RequestMsg::AutoHeadersToggled
                         | crate::message::RequestMsg::UrlCompletionMoved(_)
                         | crate::message::RequestMsg::UrlVariableValueChanged(_)
@@ -222,6 +223,7 @@ pub(crate) fn marks_session_dirty(message: &Message) -> bool {
                 | crate::message::RequestMsg::FormValuePagePrev(_)
                 | crate::message::RequestMsg::FormValuePageNext(_)
                 | crate::message::RequestMsg::UrlHovered(_)
+                | crate::message::RequestMsg::BodyHovered(_)
                 | crate::message::RequestMsg::UrlCompletionMoved(_)
                 | crate::message::RequestMsg::UrlVariableValueChanged(_)
                 | crate::message::RequestMsg::UrlVariableEnvironmentSelected(_)

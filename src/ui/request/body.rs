@@ -11,7 +11,11 @@ use crate::{
 };
 
 /// `open_menu`: the app's open context-menu key (form rows' Text/File menu).
-pub fn view<'a>(tab: &'a RequestTabState, open_menu: Option<&str>) -> Element<'a, Message> {
+pub fn view<'a>(
+    tab: &'a RequestTabState,
+    env: Option<&'a crate::domain::environment::AppEnvironment>,
+    open_menu: Option<&str>,
+) -> Element<'a, Message> {
     let type_tabs_row = body_toolbar(tab);
 
     let body_panel: Element<Message> = match tab.body_type {
@@ -30,10 +34,13 @@ pub fn view<'a>(tab: &'a RequestTabState, open_menu: Option<&str>) -> Element<'a
         .padding([24, 8])
         .into(),
 
-        BodyType::Json | BodyType::Text => tab
-            .body_editor
-            .view()
-            .map(|m| Message::Request(RequestMsg::BodyEdited(m))),
+        BodyType::Json | BodyType::Text => variable_hover(
+            tab.body_editor
+                .view()
+                .map(|m| Message::Request(RequestMsg::BodyEdited(m))),
+            tab,
+            env,
+        ),
 
         BodyType::FormData => form_view(tab, open_menu, true),
         BodyType::UrlEncoded => form_view(tab, open_menu, false),
@@ -42,10 +49,13 @@ pub fn view<'a>(tab: &'a RequestTabState, open_menu: Option<&str>) -> Element<'a
             // Postman's layout: query on top, variables underneath. Both panes
             // are code editors, so both keep their own undo history and the
             // shared gutter/theme look.
-            let query: Element<Message> = tab
-                .body_editor
-                .view()
-                .map(|m| Message::Request(RequestMsg::BodyEdited(m)));
+            let query: Element<Message> = variable_hover(
+                tab.body_editor
+                    .view()
+                    .map(|m| Message::Request(RequestMsg::BodyEdited(m))),
+                tab,
+                env,
+            );
             let variables: Element<Message> = tab
                 .graphql_variables_editor
                 .view()
@@ -515,4 +525,26 @@ fn form_view<'a>(
     ))
     .style(crate::ui::theme::thin_scrollbar)
     .into()
+}
+
+/// Postman's variable hover card over the body editor: the editor reports
+/// the mouse position, the update resolves the `{{name}}` under it, and the
+/// card follows the cursor. The wrappers are always present so the editor's
+/// widget state (scroll, focus) survives the card appearing.
+fn variable_hover<'a>(
+    editor: Element<'a, Message>,
+    tab: &'a RequestTabState,
+    env: Option<&'a crate::domain::environment::AppEnvironment>,
+) -> Element<'a, Message> {
+    let tip: Element<'a, Message> = match &tab.body_hover {
+        Some(name) => super::headers::variables_tip(&format!("{{{{{name}}}}}"), env, false),
+        None => Space::new().width(0).height(0).into(),
+    };
+    let tracked = iced::widget::mouse_area(editor)
+        .on_move(|p| Message::Request(RequestMsg::BodyHovered(Some(p))))
+        .on_exit(Message::Request(RequestMsg::BodyHovered(None)));
+    iced::widget::tooltip(tracked, tip, iced::widget::tooltip::Position::FollowCursor)
+        .gap(12)
+        .delay(std::time::Duration::from_millis(250))
+        .into()
 }

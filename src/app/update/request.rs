@@ -45,6 +45,11 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
         state.show_auto_headers = !state.show_auto_headers;
         return Task::none();
     }
+    if let RequestMsg::BodyHovered(point) = msg {
+        let tab = state.tabs.active_tab_mut();
+        tab.body_hover = point.and_then(|p| body_variable_at(tab, p));
+        return Task::none();
+    }
     if matches!(
         &msg,
         RequestMsg::HeaderSuggestOpened(..)
@@ -68,6 +73,7 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
         | RequestMsg::UrlVariableSave
         | RequestMsg::UrlVariableDismissed
         | RequestMsg::AutoHeadersToggled
+        | RequestMsg::BodyHovered(_)
         | RequestMsg::HeaderSuggestOpened(..)
         | RequestMsg::HeaderSuggestClosed
         | RequestMsg::HeaderSuggestMoved(_)
@@ -1467,6 +1473,30 @@ fn guess_mime(name: &str) -> Option<String> {
         _ => return None,
     };
     Some(m.to_owned())
+}
+
+/// Bodies past this are not searched on hover: `content()` copies the
+/// whole buffer, fine for API payloads, wasteful for a pasted dump.
+const BODY_HOVER_MAX_BYTES: usize = 2 * 1024 * 1024;
+
+/// The `{{variable}}` under a point of the body editor, like the URL bar's
+/// hover. The editor maps the point to (line, char column) itself, so wrap,
+/// scroll and the gutter are accounted for.
+fn body_variable_at(tab: &RequestTabState, point: iced::Point) -> Option<String> {
+    let pos = tab.body_editor.lsp_position_at_point(point)?;
+    let content = tab.body_editor.content();
+    if content.len() > BODY_HOVER_MAX_BYTES {
+        return None;
+    }
+    let line = content.lines().nth(pos.line as usize)?;
+    if !line.contains("{{") {
+        return None;
+    }
+    let byte = line
+        .char_indices()
+        .nth(pos.character as usize)
+        .map_or(line.len(), |(b, _)| b);
+    crate::services::variables::variable_at(line, byte)
 }
 
 /// Typing in a Headers cell keeps its list open on that cell, back at the

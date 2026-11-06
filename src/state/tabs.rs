@@ -177,6 +177,8 @@ pub struct RequestTabState {
     pub url_completion_selected: usize,
     /// Open autocomplete list of a Headers cell (Postman-style).
     pub header_suggest: Option<HeaderSuggest>,
+    /// `{{variable}}` under the mouse in the body editor, for its hover card.
+    pub body_hover: Option<String>,
     pub headers: Vec<KeyValue>,
     pub params: Vec<KeyValue>,
     pub body_type: BodyType,
@@ -328,6 +330,7 @@ impl RequestTabState {
             url_completion_open: false,
             url_completion_selected: 0,
             header_suggest: None,
+            body_hover: None,
             headers: Vec::new(),
             params: Vec::new(),
             body_type: BodyType::None,
