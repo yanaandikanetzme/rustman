@@ -31,7 +31,10 @@ fn data_dir_from(env: Option<std::ffi::OsString>) -> PathBuf {
 /// Boot from an explicit data directory. `init` passes the user's data dir;
 /// tests pass a throwaway one so they never touch real data.
 pub(crate) fn init_at(data_dir: PathBuf) -> (AppState, Task<Message>) {
-    let db = storage::open(&data_dir).ok();
+    let (db, storage_error) = match storage::open(&data_dir) {
+        Ok(db) => (Some(db), None),
+        Err(error) => (None, Some(error.to_string())),
+    };
 
     // `RUSTMAN_SAMPLE=1` (scripts/ui.sh -x): example collection for trying
     // the UI, only into a data folder without collections.
@@ -178,9 +181,16 @@ pub(crate) fn init_at(data_dir: PathBuf) -> (AppState, Task<Message>) {
     let git_identity = crate::services::vcs::resolve_identity(&data_dir.join("collections"));
 
     let state = AppState {
+        browser_previews: Vec::new(),
         environment_cell: None,
         console_open: false,
-        notification: None,
+        notification: storage_error.map(|error| crate::state::notifications::Toast {
+            kind: crate::state::notifications::ToastKind::Error,
+            placement: crate::state::notifications::ToastPlacement::BottomRight,
+            id: uuid::Uuid::new_v4().to_string(),
+            title: "Local storage unavailable".into(),
+            detail: Some(format!("{error}. Stored data has not been replaced. Restore access to the OS credential store and restart.")),
+        }),
         examples: {
             let mut examples = crate::state::examples::ExamplesState::default();
             if let Some(db) = &db {

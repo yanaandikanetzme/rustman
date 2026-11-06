@@ -1,4 +1,4 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HeaderSide {
     Request,
     Response,
@@ -22,6 +22,7 @@ pub enum ExampleMsg {
     FormatBody(HeaderSide),
     HeaderKey(HeaderSide, usize, String),
     HeaderValue(HeaderSide, usize, String),
+    HeaderReveal(HeaderSide, usize),
     HeaderAdd(HeaderSide),
     HeaderRemove(HeaderSide, usize),
     ShowHeaders(HeaderSide, bool),

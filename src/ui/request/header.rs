@@ -233,7 +233,7 @@ fn share_button() -> Element<'static, Message> {
             ..Default::default()
         }
     });
-    tooltip(btn, "Share as cURL")
+    tooltip(btn, "Export unmasked cURL")
 }
 
 /// Collection name followed by the folder chain down to the request.

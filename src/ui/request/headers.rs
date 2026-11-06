@@ -162,7 +162,11 @@ fn toolbar<'a>(
             Space::new().width(Length::Fill),
             mini::text_button(
                 None,
-                if bulk { "Key-Value Edit" } else { "Bulk Edit" },
+                if bulk {
+                    "Key-Value Edit"
+                } else {
+                    "Bulk Edit (unmasked)"
+                },
                 Some(Message::Request(RequestMsg::HeadersBulkToggle)),
             ),
             mini::dropdown(
@@ -314,7 +318,11 @@ fn header_table(items: &[KeyValue], auto: Option<Vec<(String, String)>>) -> Elem
                 .copied()
                 .collect();
             if suggestions.is_empty() {
-                value_cell(i, &item.value)
+                value_cell(
+                    i,
+                    &item.value,
+                    crate::services::variables::sensitive(&item.key),
+                )
             } else {
                 let current = CONTENT_TYPE_SUGGESTIONS
                     .iter()
@@ -332,7 +340,11 @@ fn header_table(items: &[KeyValue], auto: Option<Vec<(String, String)>>) -> Elem
                 .into()
             }
         } else {
-            value_cell(i, &item.value)
+            value_cell(
+                i,
+                &item.value,
+                crate::services::variables::sensitive(&item.key),
+            )
         };
 
         rows.push(kv_table::kv_row(
@@ -354,7 +366,12 @@ fn header_table(items: &[KeyValue], auto: Option<Vec<(String, String)>>) -> Elem
     kv_table::frame(rows)
 }
 
-fn value_cell(i: usize, value: &str) -> Element<'_, Message> {
+fn value_cell(i: usize, value: &str, sensitive: bool) -> Element<'_, Message> {
+    if sensitive {
+        return super::cell::secret_cell(value, move |s| {
+            Message::Request(RequestMsg::HeaderValueChanged(i, s))
+        });
+    }
     super::cell::text_cell("Value", value, 12.0, [5, 7], Length::Fill, move |s| {
         Message::Request(RequestMsg::HeaderValueChanged(i, s))
     })

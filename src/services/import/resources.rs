@@ -227,6 +227,10 @@ pub fn common_origin(resources: &[Resource]) -> Option<String> {
 /// folder from allocating arbitrarily large files; symlinks are not followed.
 pub fn read_paths(paths: Vec<std::path::PathBuf>) -> Result<Vec<Resource>, String> {
     use std::io::Read;
+    let mut discovered = paths.len();
+    if discovered > 1024 {
+        return Err("Select fewer folder entries".into());
+    }
     let mut pending = paths;
     let mut resources = Vec::new();
     let mut total = 0;
@@ -242,6 +246,10 @@ pub fn read_paths(paths: Vec<std::path::PathBuf>) -> Result<Vec<Resource>, Strin
         }
         if metadata.is_dir() {
             for entry in std::fs::read_dir(&path).map_err(|e| e.to_string())? {
+                discovered += 1;
+                if discovered > 1024 {
+                    return Err("Select fewer folder entries; directory scan limit exceeded".into());
+                }
                 let child = entry.map_err(|e| e.to_string())?.path();
                 // Ignore unrelated files in folders; explicitly selected files
                 // may have any extension (e.g. a saved curl command).
@@ -334,6 +342,10 @@ impl ScanEntry {
 /// Expand folders (one level of nesting per entry, symlinks skipped) into
 /// the files a folder import looks at.
 fn collect_files(paths: Vec<std::path::PathBuf>) -> Result<Vec<std::path::PathBuf>, String> {
+    let mut discovered = paths.len();
+    if discovered > 2048 {
+        return Err("Select fewer folder entries".into());
+    }
     let mut pending = paths;
     let mut files = Vec::new();
     let mut visited = 0;
@@ -348,6 +360,10 @@ fn collect_files(paths: Vec<std::path::PathBuf>) -> Result<Vec<std::path::PathBu
         }
         if metadata.is_dir() {
             for entry in std::fs::read_dir(&path).map_err(|e| e.to_string())? {
+                discovered += 1;
+                if discovered > 2048 {
+                    return Err("Select fewer folder entries; directory scan limit exceeded".into());
+                }
                 let child = entry.map_err(|e| e.to_string())?.path();
                 if child.is_dir()
                     || child.extension().and_then(|s| s.to_str()).is_some_and(|s| {
@@ -481,6 +497,21 @@ pub fn scan_paths(paths: Vec<std::path::PathBuf>) -> Result<Vec<ScanEntry>, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn security_folder_scan_bounds_ignored_entries_too() {
+        let dir = std::env::temp_dir().join(format!("rustman-scan-bound-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..2049 {
+            std::fs::File::create(dir.join(format!("ignored-{i}.png"))).unwrap();
+        }
+        assert!(
+            collect_files(vec![dir.clone()]).is_err(),
+            "enumerated entries must be bounded before queuing"
+        );
+        assert!(read_paths(vec![dir.clone()]).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn parses_six_curl_commands_in_order_without_merging_payloads() {
         let command = "curl --request POST 'https://httpbin.org/post' \\\n  --header 'Content-Type: application/json' \\\n  --data-raw '{\"message\":\"curl inside JSON; still one body\"}'";

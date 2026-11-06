@@ -18,7 +18,50 @@ pub struct WsState {
     pub connecting: bool,
     pub draft: String,
     pub messages: Vec<WsMessage>,
+    pub dropped_messages: usize,
     pub outgoing_tx: Option<mpsc::Sender<String>>,
+}
+
+impl WsState {
+    pub fn clear_messages(&mut self) {
+        self.messages.clear();
+        self.dropped_messages = 0;
+    }
+    pub fn push_message(&mut self, mut message: WsMessage) {
+        message.text = crate::services::websocket::preview_text(&message.text);
+        self.messages.push(message);
+        let mut bytes: usize = self.messages.iter().map(|m| m.text.len()).sum();
+        while self.messages.len() > 500 || bytes > 1024 * 1024 {
+            bytes -= self.messages.remove(0).text.len();
+            self.dropped_messages = self.dropped_messages.saturating_add(1);
+        }
+    }
+}
+
+const CONSOLE_TRUNCATED: &str = "[Console output truncated; showing bounded recent output]";
+fn bounded_console_logs(logs: Vec<String>) -> Vec<String> {
+    let mut kept = Vec::new();
+    let mut bytes = 0usize;
+    let mut truncated = false;
+    for line in logs.into_iter().rev() {
+        if line == CONSOLE_TRUNCATED {
+            truncated = true;
+            continue;
+        }
+        let capped = crate::services::format::head_capped(&line, 16 * 1024);
+        truncated |= capped.len() != line.len();
+        if kept.len() >= 499 || bytes + capped.len() + 1 > 64 * 1024 - 128 {
+            truncated = true;
+            break;
+        }
+        bytes += capped.len() + 1;
+        kept.push(capped.to_owned());
+    }
+    if truncated {
+        kept.push(CONSOLE_TRUNCATED.into());
+    }
+    kept.reverse();
+    kept
 }
 
 #[derive(Debug, Clone)]
@@ -380,15 +423,16 @@ impl RequestTabState {
 
     /// Replaces `script_logs` wholesale and rebuilds `console_editor` to match.
     pub fn set_script_logs(&mut self, logs: Vec<String>) {
-        self.console_editor = text_editor::Content::with_text(&logs.join("\n"));
-        self.script_logs = logs;
+        self.script_logs = bounded_console_logs(logs);
+        self.console_editor = text_editor::Content::with_text(&self.script_logs.join("\n"));
     }
 
     /// Appends to `script_logs` (e.g. a test script's logs on top of a
     /// pre-request script's) and rebuilds `console_editor` to match.
     pub fn extend_script_logs(&mut self, logs: Vec<String>) {
-        self.script_logs.extend(logs);
-        self.console_editor = text_editor::Content::with_text(&self.script_logs.join("\n"));
+        let mut combined = std::mem::take(&mut self.script_logs);
+        combined.extend(logs);
+        self.set_script_logs(combined);
     }
 
     pub fn set_viewer_content(&mut self, text: &str, is_json: bool) {
@@ -1605,5 +1649,22 @@ mod recently_closed_tests {
             m.recently_closed[0].request_id,
             (RECENTLY_CLOSED_MAX + 2).to_string()
         );
+    }
+}
+
+#[cfg(test)]
+mod security_console_tests {
+    use super::*;
+    #[test]
+    fn security_console_visible_content_is_bounded() {
+        let mut tab = RequestTabState::new();
+        tab.set_script_logs(vec!["x".repeat(200_000)]);
+        assert!(tab.console_editor.text().len() <= 64 * 1024);
+        assert!(tab.script_logs.iter().map(|s| s.len()).sum::<usize>() <= 64 * 1024);
+        for _ in 0..1100 {
+            tab.extend_script_logs(vec!["synthetic-log".into()]);
+        }
+        assert!(tab.script_logs.len() <= 500);
+        assert!(tab.console_editor.text().len() <= 64 * 1024);
     }
 }

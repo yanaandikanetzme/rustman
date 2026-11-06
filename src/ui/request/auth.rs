@@ -113,7 +113,7 @@ pub fn view(tab: &RequestTabState) -> Element<'_, Message> {
             "Bearer Token",
             vec![field_row(
                 "Token",
-                input("Token", &tab.bearer_token, false, |s| {
+                input("Token", &tab.bearer_token, true, |s| {
                     Message::Request(RequestMsg::BearerTokenChanged(s))
                 }),
             )],
@@ -164,7 +164,7 @@ pub fn view(tab: &RequestTabState) -> Element<'_, Message> {
                 ),
                 field_row(
                     "Value",
-                    input("Value", &tab.api_key_value, false, |s| {
+                    input("Value", &tab.api_key_value, true, |s| {
                         Message::Request(RequestMsg::ApiKeyValueChanged(s))
                     }),
                 ),
@@ -187,7 +187,7 @@ pub fn view(tab: &RequestTabState) -> Element<'_, Message> {
             "Cookie",
             vec![field_row(
                 "Cookie string",
-                input("name=value; other=value", &tab.cookie_string, false, |s| {
+                input("name=value; other=value", &tab.cookie_string, true, |s| {
                     Message::Request(RequestMsg::CookieStringChanged(s))
                 }),
             )],
@@ -203,7 +203,7 @@ pub fn view(tab: &RequestTabState) -> Element<'_, Message> {
                 ),
                 field_row(
                     "Secret",
-                    input("Secret", &tab.jwt_secret, false, |s| {
+                    input("Secret", &tab.jwt_secret, true, |s| {
                         Message::Request(RequestMsg::JwtSecretChanged(s))
                     }),
                 ),
@@ -276,6 +276,23 @@ fn input<'a>(
     secure: bool,
     on_input: impl Fn(String) -> Message + 'a,
 ) -> Element<'a, Message> {
+    if !super::cell::is_inline(value) {
+        let shown = if secure {
+            crate::services::variables::MASK
+        } else {
+            crate::services::format::head_capped(value, 160)
+        };
+        return row![
+            container(text(format!("{shown} [large value]")).size(12).font(MONO))
+                .width(Length::Fill),
+            button("Clear")
+                .on_press(on_input(String::new()))
+                .style(iced::widget::button::text),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .into();
+    }
     text_input(placeholder, value)
         .on_input(on_input)
         .secure(secure)

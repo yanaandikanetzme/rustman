@@ -162,7 +162,7 @@ fn ws_stream(conn: &WsConn) -> impl iced::futures::Stream<Item = Message> + use<
     let url = conn.url.clone();
     let tab_id = conn.tab_id.clone();
     iced::stream::channel(
-        256,
+        4,
         move |mut output: iced::futures::channel::mpsc::Sender<Message>| async move {
             use crate::services::websocket::WsEvent;
             match websocket::connect(url).await {
@@ -185,10 +185,10 @@ fn ws_stream(conn: &WsConn) -> impl iced::futures::Stream<Item = Message> + use<
                             event = rx.recv() => {
                                 match event {
                                     Some(WsEvent::Text(t)) => {
-                                        let _ = output.send(Message::WebSocket(WsMsg::TextFrame(t))).await;
+                                        let _ = output.send(Message::WebSocket(WsMsg::TextFrame { tab_id: tab_id.clone(), text: t })).await;
                                     }
                                     Some(WsEvent::Disconnected) | None => {
-                                        let _ = output.send(Message::WebSocket(WsMsg::Disconnected)).await;
+                                        let _ = output.send(Message::WebSocket(WsMsg::Disconnected { tab_id: tab_id.clone() })).await;
                                         break;
                                     }
                                     _ => {}
@@ -198,7 +198,12 @@ fn ws_stream(conn: &WsConn) -> impl iced::futures::Stream<Item = Message> + use<
                     }
                 }
                 Err(e) => {
-                    let _ = output.send(Message::WebSocket(WsMsg::Error(e))).await;
+                    let _ = output
+                        .send(Message::WebSocket(WsMsg::Error {
+                            tab_id: tab_id.clone(),
+                            error: e,
+                        }))
+                        .await;
                 }
             }
         },

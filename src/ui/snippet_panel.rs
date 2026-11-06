@@ -42,7 +42,7 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
         ),
         compact_icon_button(
             icons::copy(),
-            "Copy snippet",
+            "Copy unmasked snippet",
             Message::Layout(LayoutMsg::SnippetCopied),
             24.0,
         ),
@@ -228,7 +228,6 @@ fn code_lines(snippet: &str, quote: Option<char>) -> Element<'_, Message> {
     }
     col.into()
 }
-
 
 #[cfg(test)]
 mod tests {

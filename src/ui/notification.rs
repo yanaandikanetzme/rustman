@@ -1,6 +1,6 @@
 use crate::{
     message::{AppMsg, Message},
-    state::notifications::Toast,
+    state::notifications::{Toast, ToastKind},
     ui::{
         components::atoms::Button,
         icons,
@@ -13,6 +13,10 @@ use iced::{
 };
 
 pub fn view(toast: &Toast) -> Element<'_, Message> {
+    let (icon, color) = match toast.kind {
+        ToastKind::Success => (icons::check_circle(), Palette::SUCCESS),
+        ToastKind::Error => (icons::alert(), Palette::ERROR),
+    };
     let mut labels = column![
         text(&toast.title)
             .size(12)
@@ -29,12 +33,12 @@ pub fn view(toast: &Toast) -> Element<'_, Message> {
             Button::new("Dismiss")
                 .ghost()
                 .on_press(Message::App(AppMsg::ToastDismissed(toast.id.clone()))),
-            icons::check_circle().size(14).color(Palette::SUCCESS)
+            icon.size(14).color(color)
         ]
         .spacing(8)
     } else {
         row![
-            icons::check_circle().size(13).color(Palette::SUCCESS),
+            icon.size(13).color(color),
             labels,
             Space::new().width(Length::Fill),
             Button::new("Dismiss")

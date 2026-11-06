@@ -12,6 +12,13 @@ use crate::services::repos::{self, GitRepo};
 use crate::services::{storage, vcs};
 
 pub(super) fn handle(state: &mut AppState, msg: GitMsg) -> Task<Message> {
+    // A locked/failed database is not an empty workspace. Never export that
+    // empty boot state over existing shared snapshots, or commit its deletions.
+    if state.db.is_none() {
+        state.git_busy = false;
+        state.status_message = Some("Git is unavailable while local storage is locked. Restore access and restart; repository files were not changed.".into());
+        return Task::none();
+    }
     match msg {
         GitMsg::Refresh => {
             crate::app::request_ops::flush_modified_tabs(state);
@@ -19,6 +26,10 @@ pub(super) fn handle(state: &mut AppState, msg: GitMsg) -> Task<Message> {
         }
         GitMsg::Loaded(view) => {
             let view = *view;
+            let snapshot_error = view.snapshot_error;
+            if let Some(error) = &snapshot_error {
+                state.status_message = Some(error.clone());
+            }
             state.git_repo_summaries = view.summaries;
             state.git_status = view.status;
             state.git_branches = view.branches;
@@ -28,6 +39,9 @@ pub(super) fn handle(state: &mut AppState, msg: GitMsg) -> Task<Message> {
             if let Some(id) = vcs::resolve_identity(&repo_path) {
                 state.git_user_name = id.name;
                 state.git_user_email = id.email;
+            }
+            if let Some(error) = snapshot_error {
+                return snapshot_failure_notification(state, &error);
             }
         }
         GitMsg::SelectRepo(id) => {
@@ -157,13 +171,16 @@ pub(super) fn handle(state: &mut AppState, msg: GitMsg) -> Task<Message> {
             } else if count > 0 {
                 state.sidebar.panel = crate::message::SidebarPanel::Collections;
                 state.status_message = Some(if protected {
-                    format!("Imported {count} collection(s) from {name} (imported source — files left untouched)")
+                    format!(
+                        "Imported {count} collection(s) from {name} (imported source — files left untouched)"
+                    )
                 } else {
                     format!("Imported {count} collection(s) from {name}")
                 });
             } else {
-                state.status_message =
-                    Some(format!("Added {name} — no importable collections found in it"));
+                state.status_message = Some(format!(
+                    "Added {name} — no importable collections found in it"
+                ));
             }
             return refresh_task(state);
         }
@@ -271,7 +288,11 @@ pub(super) fn handle(state: &mut AppState, msg: GitMsg) -> Task<Message> {
                 let key = repo_path.to_string_lossy().into_owned();
                 let scan = repo_import::scan_dir(&repo_path, &key);
                 let global_script = vcs::read_global_script(&repo_path);
-                Ok(SyncOutcome::new(scan, global_script, format!("Pull: {summary}")))
+                Ok(SyncOutcome::new(
+                    scan,
+                    global_script,
+                    format!("Pull: {summary}"),
+                ))
             });
         }
         GitMsg::SwitchBranch(name) => {
@@ -306,7 +327,11 @@ pub(super) fn handle(state: &mut AppState, msg: GitMsg) -> Task<Message> {
                 let key = repo_path.to_string_lossy().into_owned();
                 let scan = repo_import::scan_commit(&repo_path, &id, &key)?;
                 let global_script = vcs::read_commit_global_script(&repo_path, &id);
-                Ok(SyncOutcome::new(scan, global_script, format!("Restored {short}")))
+                Ok(SyncOutcome::new(
+                    scan,
+                    global_script,
+                    format!("Restored {short}"),
+                ))
             });
         }
         GitMsg::ToggleDiff => {
@@ -393,9 +418,28 @@ pub(super) fn handle(state: &mut AppState, msg: GitMsg) -> Task<Message> {
         GitMsg::Error(error) => {
             state.git_busy = false;
             state.status_message = Some(format!("Git error: {error}"));
+            if error.starts_with("Git publication blocked:") {
+                return snapshot_failure_notification(state, &error);
+            }
         }
     }
     Task::none()
+}
+
+fn snapshot_failure_notification(state: &mut AppState, error: &str) -> Task<Message> {
+    // Use static guidance: never amplify credential-bearing error text in a toast.
+    let (title, detail) = if error.starts_with("Git publication blocked:") {
+        (
+            "Git publication blocked",
+            "Nothing was written to Git. Keep credentials in an environment and use {{NAME}} references. Local requests are unchanged.",
+        )
+    } else {
+        (
+            "Git snapshot failed",
+            "The snapshot could not be created. Check the status bar for details. Local requests are unchanged.",
+        )
+    };
+    crate::app::notifications::error(state, title, detail)
 }
 
 struct RepoAdd {
@@ -508,17 +552,20 @@ fn load_view(
     global_test_script: String,
 ) -> Result<Box<GitView>, String> {
     let mut summaries = Vec::new();
+    let mut snapshot_error = None;
     let mut status = None;
     let mut branches = Vec::new();
     let mut log = Vec::new();
     for repo in &repos {
         if repo.id == active && !repo.protected {
-            let _ = vcs::write_working_tree(
+            if let Err(error) = vcs::write_working_tree(
                 &repo.path,
                 &active_collections,
                 &global_pre_request_script,
                 &global_test_script,
-            );
+            ) {
+                snapshot_error = Some(error);
+            }
         }
         match vcs::status(&repo.path) {
             Ok(st) => {
@@ -545,6 +592,7 @@ fn load_view(
         }
     }
     Ok(Box::new(GitView {
+        snapshot_error,
         summaries,
         status,
         branches,
@@ -649,7 +697,6 @@ fn owned_ids(repos: &[GitRepo], all_collection_ids: &[String], repo_id: &str) ->
     }
 }
 
-
 /// Remove a collection, its folders and its requests from state and the DB.
 fn remove_collection(state: &mut AppState, id: &str) {
     let group_ids = crate::app::tree::groups_under(state, id);
@@ -691,6 +738,63 @@ fn apply_global_script(state: &mut AppState, global_script: Option<(String, Stri
 #[cfg(test)]
 mod restore_tests {
     use super::*;
+
+    #[test]
+    fn security_git_rejection_shows_actionable_notification_without_secret_values() {
+        let dir = std::env::temp_dir().join(format!("rustman-git-toast-{}", uuid::Uuid::new_v4()));
+        let (mut state, _) = crate::app::boot::init_at(dir.clone());
+        let error = "Git publication blocked: inline credentials must stay local".to_owned();
+        let task = handle(
+            &mut state,
+            GitMsg::Loaded(Box::new(GitView {
+                snapshot_error: Some(error.clone()),
+                summaries: vec![],
+                status: None,
+                branches: vec![],
+                log: vec![],
+            })),
+        );
+        assert_eq!(
+            task.units(),
+            0,
+            "security error must not auto-dismiss on a timer"
+        );
+        let toast = state
+            .notification
+            .as_ref()
+            .expect("rejection needs visible notification, not just status bar");
+        assert_eq!(toast.kind, crate::state::notifications::ToastKind::Error);
+        assert_eq!(toast.title, "Git publication blocked");
+        assert!(toast.detail.as_ref().unwrap().contains("{{NAME}}"));
+        assert_eq!(state.status_message.as_deref(), Some(error.as_str()));
+        state.notification = None;
+        let _ = handle(&mut state, GitMsg::Error(error));
+        assert!(
+            state.notification.is_some(),
+            "commit guard errors also need notification"
+        );
+        drop(state);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn security_storage_failure_schedules_no_git_write_or_commit() {
+        let dir = std::env::temp_dir().join(format!("rustman-locked-git-{}", uuid::Uuid::new_v4()));
+        let (mut state, _) = crate::app::boot::init_at(dir.clone());
+        state.db = None;
+        state.git_commit_message = "must remain retryable".into();
+        for action in [GitMsg::Refresh, GitMsg::Commit] {
+            let task = handle(&mut state, action);
+            assert_eq!(
+                task.units(),
+                0,
+                "unavailable storage must not schedule Git writes"
+            );
+        }
+        assert_eq!(state.git_commit_message, "must remain retryable");
+        drop(state);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     fn repo(id: &str, cols: &[&str]) -> GitRepo {
         GitRepo {
@@ -746,6 +850,8 @@ mod restore_tests {
             }
         }
         assert_eq!(state.collections.len(), 1);
+        // Release SQLite handles before deleting the isolated Windows fixture.
+        drop(state);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

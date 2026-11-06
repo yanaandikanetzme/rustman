@@ -38,6 +38,16 @@ pub fn view(tab: &RequestTabState) -> Element<'_, Message> {
     .padding([4, 12]);
 
     let mut feed = column![].spacing(4).padding([8, 10]);
+    if ws.dropped_messages > 0 {
+        feed = feed.push(
+            text(format!(
+                "Showing recent messages; {} older messages omitted",
+                ws.dropped_messages
+            ))
+            .size(TEXT_XS)
+            .color(Palette::text_muted()),
+        );
+    }
     for msg in &ws.messages {
         feed = feed.push(message_bubble(&msg.text, msg.is_outgoing));
     }

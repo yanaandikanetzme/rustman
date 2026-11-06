@@ -76,6 +76,30 @@ pub fn text_cell<'a>(
     .into()
 }
 
+/// Sensitive headers remain editable without rendering their plaintext.
+/// The oversized-value path must not fall back to a plaintext preview.
+pub fn secret_cell<'a>(
+    value: &'a str,
+    on_input: impl Fn(String) -> Message + 'a,
+) -> Element<'a, Message> {
+    if is_inline(value) {
+        text_input("Value", value)
+            .secure(true)
+            .on_input(on_input)
+            .size(12)
+            .padding([5, 7])
+            .width(Length::Fill)
+            .font(crate::ui::theme::MONO)
+            .style(crate::ui::styles::kv_input)
+            .into()
+    } else {
+        container(text(crate::services::variables::MASK).size(12))
+            .padding([5, 7])
+            .width(Length::Fill)
+            .into()
+    }
+}
+
 pub(crate) fn human_size(bytes: usize) -> String {
     if bytes < 1024 {
         format!("{bytes} B")

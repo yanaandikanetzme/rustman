@@ -102,25 +102,26 @@ pub(super) fn handle(state: &mut AppState, msg: ResponseMsg) -> Task<Message> {
             // assets won't resolve, since the file has no original URL base.
             return Task::perform(
                 async move {
-                    let path = std::env::temp_dir().join(format!(
-                        "rustman-preview-{}-{}.html",
-                        std::process::id(),
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_millis())
-                            .unwrap_or(0)
-                    ));
-                    tokio::fs::write(&path, html.as_bytes())
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    open::that(&path).map_err(|e| e.to_string())?;
-                    Ok(())
+                    tokio::task::spawn_blocking(move || -> Result<_, String> {
+                        let preview = crate::services::preview_file::write(
+                            &std::env::temp_dir(),
+                            html.as_bytes(),
+                        )?;
+                        open::that(preview.as_ref()).map_err(|e| e.to_string())?;
+                        Ok(preview)
+                    })
+                    .await
+                    .map_err(|e| e.to_string())?
                 },
                 |result| Message::Response(ResponseMsg::BodyOpened(result)),
             );
         }
-        ResponseMsg::BodyOpened(Ok(())) => {
-            state.status_message = Some("HTML opened in your browser".to_owned());
+        ResponseMsg::BodyOpened(Ok(preview)) => {
+            state.browser_previews.push(preview);
+            if state.browser_previews.len() > 8 {
+                state.browser_previews.remove(0);
+            }
+            state.status_message = Some("Unmasked HTML opened in your browser".to_owned());
         }
         ResponseMsg::BodyOpened(Err(e)) => {
             state.status_message = Some(format!("Could not open browser: {e}"));
@@ -254,5 +255,29 @@ fn extension_for_content_type(content_type: &str) -> &'static str {
         "txt"
     } else {
         "bin"
+    }
+}
+
+#[cfg(test)]
+mod security_preview_tests {
+    use super::*;
+    #[test]
+    fn security_publication_preview_eviction_and_app_drop_cleanup() {
+        let dir =
+            std::env::temp_dir().join(format!("rustman-preview-state-{}", uuid::Uuid::new_v4()));
+        let (mut state, _) = crate::app::boot::init_at(dir.clone());
+        let mut paths = Vec::new();
+        for _ in 0..9 {
+            let preview =
+                crate::services::preview_file::write(&dir, b"synthetic-response").unwrap();
+            paths.push(preview.as_ref().to_path_buf());
+            let _ = handle(&mut state, ResponseMsg::BodyOpened(Ok(preview)));
+        }
+        assert_eq!(state.browser_previews.len(), 8);
+        assert!(!paths[0].exists());
+        assert!(paths[1..].iter().all(|p| p.exists()));
+        drop(state);
+        assert!(paths.iter().all(|p| !p.exists()));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
