@@ -807,7 +807,6 @@ fn code_block<'a>(
 }
 
 #[cfg(test)]
-
 mod tests {
     use super::*;
 
