@@ -17,6 +17,7 @@ use crate::{
 
 mod boot;
 mod console;
+pub(crate) mod docs;
 mod drafts;
 pub(crate) mod notifications;
 mod request_ops;
@@ -40,6 +41,8 @@ pub struct AppState {
     pub console_open: bool,
     /// The Console panel's height, dragged from its top edge.
     pub console_height: f32,
+    /// The open collection documentation page, in place of the request view.
+    pub collection_docs: Option<crate::state::docs::CollectionDocs>,
     pub console: crate::state::console::ConsoleState,
     pub notification: Option<crate::state::notifications::Toast>,
     pub examples: crate::state::examples::ExamplesState,
@@ -205,6 +208,9 @@ impl AppState {
     pub(crate) fn close_environment_workspace(&mut self) {
         self.sidebar.env_variable_hover = None;
         self.sidebar.environment_page = None;
+        // One page at a time: whatever closes the environment page for
+        // another view closes the documentation page too.
+        self.collection_docs = None;
         self.environment_cell = None;
         self.sidebar.env_editing = None;
         self.sidebar.env_edit_rows.clear();

@@ -177,6 +177,16 @@ fn masked(mut input: GenerateCurlInput) -> GenerateCurlInput {
     input
 }
 
+/// A saved request as code in `lang` for the documentation page, with
+/// typed credentials masked and `{{variables}}` as written.
+pub(crate) fn doc_snippet(req: &crate::domain::collection::SavedRequest, lang: Lang) -> String {
+    let tab = RequestTabState::from_saved(req);
+    match curl_input(&tab) {
+        Ok(input) => crate::services::snippet::generate(lang, &masked(input)),
+        Err(error) => error,
+    }
+}
+
 /// Full, unmasked cURL command (Share / Export).
 pub(crate) fn command(tab: &RequestTabState) -> Result<String, String> {
     curl_input(tab).map(|i| generate(&i))

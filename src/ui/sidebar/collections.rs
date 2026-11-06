@@ -315,7 +315,11 @@ fn collection_view<'a>(
     let renaming = state.sidebar.col_renaming.as_deref() == Some(collection.id.as_str());
     let dragging = state.sidebar.dragging_item.as_deref() == Some(collection.id.as_str());
     let menu_open = state.sidebar.context_menu.as_deref() == Some(collection.id.as_str());
-    let selected = state.sidebar.selected_collections.contains(&collection.id);
+    let selected = state.sidebar.selected_collections.contains(&collection.id)
+        || state
+            .collection_docs
+            .as_ref()
+            .is_some_and(|d| d.collection_id == collection.id);
 
     let header: Element<Message> = if renaming {
         let rid = collection.id.clone();
@@ -549,6 +553,7 @@ fn request_view<'a>(
 ) -> Element<'a, Message> {
     let selected = state.examples.editor.is_none()
         && state.sidebar.environment_page.is_none()
+        && state.collection_docs.is_none()
         && state.sidebar.selected_request.as_deref() == Some(req.id.as_str());
     let active_parent = state
         .examples

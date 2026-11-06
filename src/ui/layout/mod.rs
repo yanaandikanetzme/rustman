@@ -15,6 +15,7 @@ mod console;
 /// Thickness of the drag handle above the Console.
 const CONSOLE_HANDLE: f32 = 8.0;
 mod dialogs;
+mod docs;
 pub mod header;
 mod status_bar;
 mod style;
@@ -40,7 +41,9 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
     // the menu over — the nested message is published last and wins.
     // The snippet panel belongs to the request view; the environment editor
     // and the example editor keep the full width.
-    let request_view = state.sidebar.environment_page.is_none() && state.examples.editor.is_none();
+    let request_view = state.sidebar.environment_page.is_none()
+        && state.examples.editor.is_none()
+        && state.collection_docs.is_none();
     let mut columns = row![left_panel(state), main_area(state)].height(Length::Fill);
     if request_view && state.snippet_open {
         columns = columns.push(crate::ui::snippet_panel::view(state));
@@ -257,6 +260,12 @@ fn main_area(state: &AppState) -> Element<'_, Message> {
         .and_then(|id| state.environments.iter().find(|e| &e.id == id))
     {
         return crate::ui::environment_workspace::view(state, env);
+    }
+    if let Some(docs) = &state.collection_docs {
+        return column![tab_bar::multi_tab_bar(state), docs::view(state, docs)]
+            .height(Length::Fill)
+            .width(Length::Fill)
+            .into();
     }
     if let Some(editor) = &state.examples.editor {
         return column![

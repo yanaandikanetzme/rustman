@@ -186,6 +186,7 @@ pub(crate) fn init_at(data_dir: PathBuf) -> (AppState, Task<Message>) {
         environment_cell: None,
         console_open: false,
         console_height: 280.0,
+        collection_docs: None,
         console: Default::default(),
         notification: storage_error.map(|error| crate::state::notifications::Toast {
             kind: crate::state::notifications::ToastKind::Error,

@@ -167,6 +167,30 @@ pub(super) fn handle(state: &mut AppState, msg: SidebarMsg) -> Task<Message> {
                 return Task::done(Message::Git(crate::message::GitMsg::Refresh));
             }
         }
+        SidebarMsg::CollectionDocsOpened(id) => {
+            state.sidebar.context_menu = None;
+            crate::app::docs::open(state, &id);
+        }
+        SidebarMsg::DocsClosed => state.collection_docs = None,
+        SidebarMsg::DocsLangSet(lang) => {
+            state.sidebar.context_menu = None;
+            crate::app::docs::set_lang(state, lang);
+        }
+        SidebarMsg::DocsToggled(key) => {
+            if let Some(docs) = &mut state.collection_docs {
+                docs.toggle(key);
+            }
+        }
+        SidebarMsg::DocsExampleChosen(id, i) => {
+            state.sidebar.context_menu = None;
+            if let Some(docs) = &mut state.collection_docs {
+                docs.chosen.insert(id, i);
+            }
+        }
+        SidebarMsg::DocsCopied(content) => {
+            state.status_message = Some("Copied to clipboard.".into());
+            return iced::clipboard::write::<Message>(content);
+        }
         SidebarMsg::RequestOpened(req) => {
             state.close_environment_workspace();
             state.sidebar.selected_request = Some(req.id.clone());
@@ -509,6 +533,9 @@ pub(super) fn handle(state: &mut AppState, msg: SidebarMsg) -> Task<Message> {
                 }
                 state.sidebar.selected_collections.clear();
                 state.sidebar.selection_anchor = Some(id.clone());
+                if !is_double {
+                    crate::app::docs::open(state, &id);
+                }
                 if state.sidebar.expanded.contains(&id) {
                     state.sidebar.expanded.remove(&id);
                 } else {

@@ -329,6 +329,22 @@ fn dispatch(state: &mut AppState, message: Message) -> Task<Message> {
     if blocks_example_exit(state, &message) {
         return Task::none();
     }
+    if state.collection_docs.is_some()
+        && let Message::Request(msg) = &message
+    {
+        use crate::message::RequestMsg;
+        match msg {
+            RequestMsg::CloseCurrentTab => {
+                state.collection_docs = None;
+                return Task::none();
+            }
+            RequestMsg::SwitchTab(_)
+            | RequestMsg::NewTab
+            | RequestMsg::NewWsTab
+            | RequestMsg::CloseTab(_) => state.collection_docs = None,
+            _ => {}
+        }
+    }
     if state.sidebar.environment_page.is_some() {
         if let Message::Request(msg) = &message {
             use crate::message::RequestMsg;

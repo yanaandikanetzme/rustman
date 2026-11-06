@@ -46,6 +46,15 @@ pub enum Message {
 pub enum SidebarMsg {
     PanelSelected(SidebarPanel),
     RequestOpened(SavedRequest),
+    /// A collection's documentation page.
+    CollectionDocsOpened(String),
+    DocsClosed,
+    DocsLangSet(crate::services::snippet::Lang),
+    /// A code block's "View more" or an example's Headers tab, by key.
+    DocsToggled(String),
+    /// The example shown for a request id.
+    DocsExampleChosen(String, usize),
+    DocsCopied(String),
     NewCollection,
     RenameCollection {
         id: String,
