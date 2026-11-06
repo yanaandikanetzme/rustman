@@ -81,7 +81,7 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
     } else {
         root
     };
-    if state.sidebar.collection_delete_id.is_some() {
+    if !state.sidebar.collection_delete_ids.is_empty() {
         iced::widget::stack![
             root,
             iced::widget::opaque(dialogs::collection_delete_dialog(state))

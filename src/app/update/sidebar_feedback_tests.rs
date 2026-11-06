@@ -53,10 +53,7 @@ fn sidebar_feedback_delete_requires_typed_confirmation() {
         1,
         "requesting deletion must only open a dialog"
     );
-    assert_eq!(
-        state.sidebar.collection_delete_id.as_deref(),
-        Some("feedback-col")
-    );
+    assert_eq!(state.sidebar.collection_delete_ids, ["feedback-col"]);
     let _ = super::update(
         &mut state,
         Message::Sidebar(SidebarMsg::CollectionDeleteConfirmed),
@@ -66,7 +63,7 @@ fn sidebar_feedback_delete_requires_typed_confirmation() {
         &mut state,
         Message::Sidebar(SidebarMsg::CollectionDeleteCancelled),
     );
-    assert!(state.sidebar.collection_delete_id.is_none());
+    assert!(state.sidebar.collection_delete_ids.is_empty());
     assert_eq!(state.collections.len(), 1);
     drop(state);
     let _ = std::fs::remove_dir_all(dir);
@@ -173,8 +170,118 @@ fn sidebar_feedback_failed_delete_rolls_back_and_keeps_confirmation_open() {
             .len(),
         1
     );
-    assert!(state.sidebar.collection_delete_id.is_some());
+    assert!(!state.sidebar.collection_delete_ids.is_empty());
     assert!(state.notification.is_none());
+    drop(state);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Fixture with collections "c0".."c{n-1}" after the default one.
+fn multi_fixture(n: usize) -> (AppState, std::path::PathBuf) {
+    let (mut state, dir) = fixture();
+    let imports = (0..n)
+        .map(|i| {
+            let mut d = data();
+            d.collection.id = format!("c{i}");
+            d.collection.name = format!("Col {i}");
+            d.requests = vec![SavedRequest::new_in(format!("c{i}"), "Req".into())];
+            d
+        })
+        .collect();
+    let _ = super::update(
+        &mut state,
+        Message::Import(ImportMsg::PostmanLoaded(imports)),
+    );
+    (state, dir)
+}
+
+fn click(state: &mut AppState, id: &str, shift: bool, ctrl: bool) {
+    use iced::keyboard::Modifiers;
+    let mut m = Modifiers::empty();
+    if shift {
+        m |= Modifiers::SHIFT;
+    }
+    if ctrl {
+        m |= Modifiers::CTRL;
+    }
+    let _ = super::update(state, Message::Sidebar(SidebarMsg::ModifiersChanged(m)));
+    let _ = super::update(
+        state,
+        Message::Sidebar(SidebarMsg::ItemDragStart(id.into())),
+    );
+    let _ = super::update(state, Message::Sidebar(SidebarMsg::ItemDragEnd));
+    let _ = super::update(
+        state,
+        Message::Sidebar(SidebarMsg::ModifiersChanged(Modifiers::empty())),
+    );
+}
+
+#[test]
+fn shift_and_ctrl_click_select_collections_without_toggling_them() {
+    let (mut state, dir) = multi_fixture(4);
+    click(&mut state, "c0", false, false);
+    let expanded = state.sidebar.expanded.clone();
+    click(&mut state, "c2", true, false);
+    assert_eq!(state.sidebar.selected_collections, ["c0", "c1", "c2"]);
+    assert_eq!(
+        state.sidebar.expanded, expanded,
+        "shift-click must not toggle"
+    );
+    click(&mut state, "c1", false, true);
+    assert_eq!(state.sidebar.selected_collections, ["c0", "c2"]);
+    click(&mut state, "c3", false, true);
+    assert_eq!(state.sidebar.selected_collections, ["c0", "c2", "c3"]);
+    // Shift range runs from the last Ctrl-click, upward too.
+    click(&mut state, "c1", true, false);
+    assert_eq!(state.sidebar.selected_collections, ["c1", "c2", "c3"]);
+    let _ = super::update(
+        &mut state,
+        Message::Sidebar(SidebarMsg::CollectionSelectionCleared),
+    );
+    assert!(state.sidebar.selected_collections.is_empty());
+    click(&mut state, "c1", false, true);
+    click(&mut state, "c3", false, false);
+    assert!(
+        state.sidebar.selected_collections.is_empty(),
+        "a plain click drops the selection"
+    );
+    drop(state);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn deleting_a_selection_removes_every_selected_collection_after_confirmation() {
+    let (mut state, dir) = multi_fixture(3);
+    click(&mut state, "c0", false, true);
+    click(&mut state, "c2", false, true);
+    let _ = super::update(
+        &mut state,
+        Message::Sidebar(SidebarMsg::DeleteSelectedCollections),
+    );
+    assert_eq!(state.sidebar.collection_delete_ids, ["c0", "c2"]);
+    assert_eq!(state.collections.len(), 4, "asking deletes nothing");
+    for msg in [
+        SidebarMsg::CollectionDeleteProceed,
+        SidebarMsg::CollectionDeleteTextChanged("delete".into()),
+        SidebarMsg::CollectionDeleteConfirmed,
+    ] {
+        let _ = super::update(&mut state, Message::Sidebar(msg));
+    }
+    let left: Vec<&str> = state.collections.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(left, ["feedback-col", "c1"]);
+    assert!(state.requests.get("c0").is_none() && state.requests.get("c2").is_none());
+    assert_eq!(
+        storage::get_collections(state.db.as_ref().unwrap())
+            .unwrap()
+            .len(),
+        2
+    );
+    assert!(state.sidebar.selected_collections.is_empty());
+    assert!(state.sidebar.collection_delete_ids.is_empty());
+    assert_eq!(
+        state.notification.as_ref().map(|n| n.title.as_str()),
+        Some("2 collections deleted")
+    );
     drop(state);
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -677,10 +784,17 @@ fn postman_environments_import_activate_and_update_in_place() {
         .iter()
         .find(|e| e.id == "postman-env-e1")
         .expect("saved");
-    assert!(imported.is_active, "first Postman env is activated when none is");
+    assert!(
+        imported.is_active,
+        "first Postman env is activated when none is"
+    );
 
     import(&mut state, env("b.test"));
-    assert_eq!(state.environments.len(), before + 1, "re-import updates in place");
+    assert_eq!(
+        state.environments.len(),
+        before + 1,
+        "re-import updates in place"
+    );
     let updated = state
         .environments
         .iter()

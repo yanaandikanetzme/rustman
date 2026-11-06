@@ -314,6 +314,7 @@ fn collection_view<'a>(
     let renaming = state.sidebar.col_renaming.as_deref() == Some(collection.id.as_str());
     let dragging = state.sidebar.dragging_item.as_deref() == Some(collection.id.as_str());
     let menu_open = state.sidebar.context_menu.as_deref() == Some(collection.id.as_str());
+    let selected = state.sidebar.selected_collections.contains(&collection.id);
 
     let header: Element<Message> = if renaming {
         let rid = collection.id.clone();
@@ -367,7 +368,11 @@ fn collection_view<'a>(
                 content,
                 BASE_INDENT,
                 COLLECTION_ROW_H,
-                container_fill(state, &collection.id, dragging),
+                if selected && state.sidebar.drop_target.as_deref() != Some(&collection.id) {
+                    RowFill::Selected
+                } else {
+                    container_fill(state, &collection.id, dragging)
+                },
                 Message::Sidebar(SidebarMsg::ItemDragStart(collection.id.clone())),
             ),
             &collection.id,
@@ -377,7 +382,14 @@ fn collection_view<'a>(
     let header = if menu_open {
         popup(
             header,
-            collection_menu(&collection.id),
+            collection_menu(
+                &collection.id,
+                if selected {
+                    state.sidebar.selected_collections.len()
+                } else {
+                    0
+                },
+            ),
             Message::Sidebar(SidebarMsg::ContextMenuClosed),
         )
     } else {
@@ -834,7 +846,16 @@ fn empty_state<'a>(label: &'static str, depth: usize) -> Element<'a, Message> {
 }
 
 /// Right-click menu for a collection: add children, rename, export, delete.
-fn collection_menu(col_id: &str) -> Element<'_, Message> {
+/// `selected` > 1 when the row is part of a Shift/Ctrl multi-selection.
+fn collection_menu(col_id: &str, selected: usize) -> Element<'_, Message> {
+    if selected > 1 {
+        return context_menu(vec![menu_item(
+            Some(icons::trash()),
+            format!("Delete {selected} collections"),
+            Some(Message::Sidebar(SidebarMsg::DeleteSelectedCollections)),
+            true,
+        )]);
+    }
     context_menu(vec![
         ctx_item(
             "New request",

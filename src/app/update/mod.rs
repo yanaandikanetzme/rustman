@@ -257,7 +257,7 @@ fn dispatch(state: &mut AppState, message: Message) -> Task<Message> {
     {
         return Task::none();
     }
-    if (state.sidebar.collection_delete_id.is_some() || state.sidebar.request_delete.is_some())
+    if (!state.sidebar.collection_delete_ids.is_empty() || state.sidebar.request_delete.is_some())
         && matches!(&message, Message::Request(_) | Message::Palette(_))
     {
         return Task::none();

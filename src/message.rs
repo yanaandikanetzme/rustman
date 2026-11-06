@@ -63,6 +63,12 @@ pub enum SidebarMsg {
         name: String,
     },
     DeleteCollection(String),
+    /// Ask before deleting every Shift/Ctrl-selected collection.
+    DeleteSelectedCollections,
+    /// Drop the Shift/Ctrl collection selection (Escape).
+    CollectionSelectionCleared,
+    /// Held keyboard modifiers changed (drives Shift/Ctrl-click selection).
+    ModifiersChanged(iced::keyboard::Modifiers),
     DeleteRequest {
         id: String,
         collection_id: String,

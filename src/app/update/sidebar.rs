@@ -17,19 +17,19 @@ pub(super) fn handle(state: &mut AppState, msg: SidebarMsg) -> Task<Message> {
             state.sidebar.env_edit_rows.clear();
         }
         SidebarMsg::CollectionDeleteTextChanged(text) => {
-            if state.sidebar.collection_delete_id.is_some() {
+            if !state.sidebar.collection_delete_ids.is_empty() {
                 state.sidebar.collection_delete_text =
                     crate::services::format::head_capped(&text, 32).to_owned();
             }
         }
         SidebarMsg::CollectionDeleteCancelled => {
-            state.sidebar.collection_delete_id = None;
+            state.sidebar.collection_delete_ids.clear();
             state.sidebar.collection_delete_text.clear();
             state.sidebar.collection_delete_typing = false;
             state.status_message = None;
         }
         SidebarMsg::CollectionDeleteProceed => {
-            if state.sidebar.collection_delete_id.is_some() {
+            if !state.sidebar.collection_delete_ids.is_empty() {
                 state.sidebar.collection_delete_typing = true;
                 state.sidebar.collection_delete_text.clear();
                 return iced::widget::operation::focus("collection-delete-confirm");
@@ -59,34 +59,52 @@ pub(super) fn handle(state: &mut AppState, msg: SidebarMsg) -> Task<Message> {
             {
                 return Task::none();
             }
-            let Some(id) = state.sidebar.collection_delete_id.clone() else {
-                return Task::none();
-            };
-            if !state.collections.iter().any(|c| c.id == id) {
-                state.sidebar.collection_delete_id = None;
-                return Task::none();
-            }
-            let result = state
-                .db
-                .as_ref()
-                .ok_or("Local storage is unavailable.".to_owned())
-                .and_then(|db| storage::delete_collection(db, &id));
-            if let Err(error) = result {
-                state.status_message = Some(format!("Could not delete collection: {error}"));
+            let ids: Vec<String> = std::mem::take(&mut state.sidebar.collection_delete_ids)
+                .into_iter()
+                .filter(|id| state.collections.iter().any(|c| &c.id == id))
+                .collect();
+            if ids.is_empty() {
                 return Task::none();
             }
-            let group_ids = crate::app::tree::groups_under(state, &id);
-            state.groups.retain(|g| !group_ids.contains(&g.id));
-            state.collections.retain(|c| c.id != id);
-            state.requests.remove(&id);
-            state.sidebar.collection_delete_id = None;
+            let mut deleted = 0usize;
+            for (i, id) in ids.iter().enumerate() {
+                let result = state
+                    .db
+                    .as_ref()
+                    .ok_or("Local storage is unavailable.".to_owned())
+                    .and_then(|db| storage::delete_collection(db, id));
+                if let Err(error) = result {
+                    // Keep the dialog open on what is left, so a retry
+                    // does not repeat the ones already gone.
+                    state.sidebar.collection_delete_ids = ids[i..].to_vec();
+                    state.status_message = Some(format!("Could not delete collection: {error}"));
+                    if deleted > 0 {
+                        crate::app::drafts::mark_orphans(state);
+                    }
+                    return Task::none();
+                }
+                let group_ids = crate::app::tree::groups_under(state, id);
+                state.groups.retain(|g| !group_ids.contains(&g.id));
+                state.collections.retain(|c| &c.id != id);
+                state.requests.remove(id);
+                state.sidebar.selected_collections.retain(|s| s != id);
+                if state.sidebar.selection_anchor.as_ref() == Some(id) {
+                    state.sidebar.selection_anchor = None;
+                }
+                deleted += 1;
+            }
             state.sidebar.collection_delete_text.clear();
             state.sidebar.collection_delete_typing = false;
-            state.status_message = Some("Collection deleted".into());
+            let label = if deleted == 1 {
+                "Collection deleted".to_owned()
+            } else {
+                format!("{deleted} collections deleted")
+            };
+            state.status_message = Some(label.clone());
             crate::app::drafts::mark_orphans(state);
             return crate::app::notifications::success(
                 state,
-                "Collection deleted",
+                &label,
                 None,
                 crate::state::notifications::ToastPlacement::BottomLeft,
             );
@@ -183,13 +201,23 @@ pub(super) fn handle(state: &mut AppState, msg: SidebarMsg) -> Task<Message> {
                 return Task::none();
             }
             // First layer: the warning. Typing "delete" is the second.
-            state.sidebar.collection_delete_id = Some(id);
-            state.sidebar.collection_delete_text.clear();
-            state.sidebar.collection_delete_typing = false;
-            state.sidebar.context_menu = None;
-            state.notification = None;
-            state.status_message = None;
+            open_collection_delete(state, vec![id]);
         }
+        SidebarMsg::DeleteSelectedCollections => {
+            let ids: Vec<String> = state
+                .collections
+                .iter()
+                .filter(|c| state.sidebar.selected_collections.contains(&c.id))
+                .map(|c| c.id.clone())
+                .collect();
+            if !ids.is_empty() {
+                open_collection_delete(state, ids);
+            }
+        }
+        SidebarMsg::CollectionSelectionCleared => {
+            state.sidebar.selected_collections.clear();
+        }
+        SidebarMsg::ModifiersChanged(modifiers) => state.sidebar.modifiers = modifiers,
         SidebarMsg::DeleteRequest { id, collection_id } => {
             if let Some(reqs) = state.requests.get_mut(&collection_id) {
                 reqs.retain(|r| r.id != id);
@@ -466,7 +494,21 @@ pub(super) fn handle(state: &mut AppState, msg: SidebarMsg) -> Task<Message> {
                 Some((prev, at)) if prev == &id && at.elapsed().as_millis() < 400
             );
             state.sidebar.last_press = Some((id.clone(), std::time::Instant::now()));
-            if state.collections.iter().any(|c| c.id == id) {
+            let is_collection = state.collections.iter().any(|c| c.id == id);
+            if !is_collection {
+                state.sidebar.selected_collections.clear();
+            }
+            if is_collection {
+                let mods = state.sidebar.modifiers;
+                if mods.shift() || mods.command() {
+                    // Shift/Ctrl-click selects (Explorer / Postman style)
+                    // instead of toggling, dragging or renaming.
+                    state.sidebar.last_press = None;
+                    select_collection(state, &id, mods.shift());
+                    return Task::none();
+                }
+                state.sidebar.selected_collections.clear();
+                state.sidebar.selection_anchor = Some(id.clone());
                 if state.sidebar.expanded.contains(&id) {
                     state.sidebar.expanded.remove(&id);
                 } else {
@@ -872,6 +914,45 @@ impl ItemLocation {
         self.as_group == other.as_group
             && self.parent_id == other.parent_id
             && self.parent_is_collection == other.parent_is_collection
+    }
+}
+
+/// Open the two-step delete dialog for one or more collections.
+fn open_collection_delete(state: &mut AppState, ids: Vec<String>) {
+    state.sidebar.collection_delete_ids = ids;
+    state.sidebar.collection_delete_text.clear();
+    state.sidebar.collection_delete_typing = false;
+    state.sidebar.context_menu = None;
+    state.notification = None;
+    state.status_message = None;
+}
+
+/// Ctrl-click toggles one collection; Shift-click selects the run from the
+/// anchor (last plain / Ctrl click) to `id`, in sidebar order.
+fn select_collection(state: &mut AppState, id: &str, range: bool) {
+    let sidebar = &mut state.sidebar;
+    sidebar.context_menu = None;
+    let anchor = sidebar
+        .selection_anchor
+        .as_deref()
+        .and_then(|a| state.collections.iter().position(|c| c.id == a));
+    let target = state.collections.iter().position(|c| c.id == id);
+    match (range, anchor, target) {
+        (true, Some(a), Some(t)) => {
+            let (lo, hi) = if a <= t { (a, t) } else { (t, a) };
+            sidebar.selected_collections = state.collections[lo..=hi]
+                .iter()
+                .map(|c| c.id.clone())
+                .collect();
+        }
+        _ => {
+            if let Some(i) = sidebar.selected_collections.iter().position(|s| s == id) {
+                sidebar.selected_collections.remove(i);
+            } else {
+                sidebar.selected_collections.push(id.to_owned());
+            }
+            sidebar.selection_anchor = Some(id.to_owned());
+        }
     }
 }
 
