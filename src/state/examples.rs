@@ -7,6 +7,8 @@ pub struct ExamplesState {
     pub items: HashMap<String, Vec<RequestExample>>,
     pub expanded: HashSet<String>,
     pub editor: Option<ExampleEditor>,
+    /// The example whose delete dialog is open, asked from the sidebar.
+    pub delete_asked: Option<String>,
 }
 
 pub struct ExampleEditor {

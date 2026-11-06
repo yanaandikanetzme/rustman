@@ -180,6 +180,42 @@ pub(super) fn request_delete_dialog(state: &AppState) -> Element<'_, Message> {
         .and_then(|(id, col)| state.requests.get(col)?.iter().find(|r| &r.id == id))
         .map(|r| r.name.as_str())
         .unwrap_or("request");
+    delete_confirm_dialog(
+        name,
+        Message::Sidebar(SidebarMsg::RequestDeleteCancelled),
+        Message::Sidebar(SidebarMsg::RequestDeleteConfirmed),
+    )
+}
+
+/// The same confirm for an example deleted from the sidebar.
+pub(super) fn example_delete_dialog(state: &AppState) -> Element<'_, Message> {
+    use crate::message::example::ExampleMsg;
+    let name = state
+        .examples
+        .delete_asked
+        .as_ref()
+        .and_then(|id| {
+            state
+                .examples
+                .items
+                .values()
+                .flatten()
+                .find(|e| &e.id == id)
+        })
+        .map(|e| e.name.as_str())
+        .unwrap_or("example");
+    delete_confirm_dialog(
+        name,
+        Message::Example(ExampleMsg::DeleteCancelled),
+        Message::Example(ExampleMsg::DeleteConfirmed),
+    )
+}
+
+fn delete_confirm_dialog<'a>(
+    name: &str,
+    cancel: Message,
+    confirm: Message,
+) -> Element<'a, Message> {
     let name = crate::services::format::head_capped(name, 180);
     let content = column![
         row![
@@ -191,7 +227,7 @@ pub(super) fn request_delete_dialog(state: &AppState) -> Element<'_, Message> {
             crate::ui::components::atoms::compact_icon_button(
                 icons::close(),
                 "Cancel deletion",
-                Message::Sidebar(SidebarMsg::RequestDeleteCancelled),
+                cancel.clone(),
                 22.0
             )
         ]
@@ -208,10 +244,9 @@ pub(super) fn request_delete_dialog(state: &AppState) -> Element<'_, Message> {
         ],
         row![
             Space::new().width(Length::Fill),
-            crate::ui::components::atoms::Button::new("Cancel")
-                .on_press(Message::Sidebar(SidebarMsg::RequestDeleteCancelled)),
+            crate::ui::components::atoms::Button::new("Cancel").on_press(cancel),
             button(text("Delete").size(12))
-                .on_press(Message::Sidebar(SidebarMsg::RequestDeleteConfirmed))
+                .on_press(confirm)
                 .style(danger_btn_style)
                 .padding([5, 12]),
         ]

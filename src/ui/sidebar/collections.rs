@@ -697,7 +697,7 @@ fn request_view<'a>(
             ]
             .spacing(6)
             .align_y(iced::Alignment::Center);
-            children = children.push(tree_row(
+            let example_row = mouse_area(tree_row(
                 content,
                 indent + METHOD_W - 8.0,
                 24.0,
@@ -709,7 +709,21 @@ fn request_view<'a>(
                 Message::Example(crate::message::example::ExampleMsg::Open(
                     example.id.clone(),
                 )),
-            ));
+            ))
+            .on_right_press(Message::Sidebar(SidebarMsg::ContextMenuOpened(
+                example.id.clone(),
+            )));
+            children = children.push(
+                if state.sidebar.context_menu.as_deref() == Some(example.id.as_str()) {
+                    popup(
+                        example_row.into(),
+                        example_menu(&example.id),
+                        Message::Sidebar(SidebarMsg::ContextMenuClosed),
+                    )
+                } else {
+                    example_row.into()
+                },
+            );
         }
     }
     children.into()
@@ -926,6 +940,17 @@ fn group_menu(group_id: &str) -> Element<'_, Message> {
             true,
         ),
     ])
+}
+
+/// Right-click menu for a saved example.
+fn example_menu(id: &str) -> Element<'static, Message> {
+    context_menu(vec![ctx_item(
+        "Delete",
+        Message::Example(crate::message::example::ExampleMsg::DeleteAsked(
+            id.to_owned(),
+        )),
+        true,
+    )])
 }
 
 /// Right-click menu for a request: duplicate, rename, delete.

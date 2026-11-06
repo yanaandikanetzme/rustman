@@ -99,6 +99,12 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
             iced::widget::opaque(dialogs::request_delete_dialog(state))
         ]
         .into()
+    } else if state.examples.delete_asked.is_some() {
+        iced::widget::stack![
+            root,
+            iced::widget::opaque(dialogs::example_delete_dialog(state))
+        ]
+        .into()
     } else if state.palette_open {
         iced::widget::stack![root, crate::ui::command_palette::view(state)].into()
     } else if state.close_confirm_tab.is_some() {

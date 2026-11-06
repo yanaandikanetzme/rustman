@@ -59,6 +59,9 @@ pub(crate) fn subscription(state: &AppState) -> Subscription<Message> {
     if state.sidebar.request_delete.is_some() {
         all.push(event::listen_with(request_delete_keys));
     }
+    if state.examples.delete_asked.is_some() {
+        all.push(event::listen_with(example_delete_keys));
+    }
     if state.sidebar.search_open && !state.palette_open {
         all.push(event::listen_with(sidebar_search_keys));
     }
@@ -190,6 +193,26 @@ fn request_delete_keys(
             key: keyboard::Key::Named(keyboard::key::Named::Enter),
             ..
         }) => Some(Message::Sidebar(SidebarMsg::RequestDeleteConfirmed)),
+        _ => None,
+    }
+}
+
+/// Escape cancels, Enter confirms the example delete dialog.
+fn example_delete_keys(
+    event: Event,
+    _status: event::Status,
+    _window: window::Id,
+) -> Option<Message> {
+    use crate::message::example::ExampleMsg;
+    match event {
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(keyboard::key::Named::Escape),
+            ..
+        }) => Some(Message::Example(ExampleMsg::DeleteCancelled)),
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(keyboard::key::Named::Enter),
+            ..
+        }) => Some(Message::Example(ExampleMsg::DeleteConfirmed)),
         _ => None,
     }
 }
