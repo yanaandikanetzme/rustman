@@ -3,7 +3,7 @@ name = "rustman"
 version = "0.3.15"
 edition = "2024"
 description = "Rustman — pure-Rust native API testing tool built with iced"
-authors = ["animeshchaudhri"]
+authors = ["modified"]
 
 [[bin]]
 name = "rustman"
@@ -19,7 +19,13 @@ path = "src/main.rs"
 # boot-time check and its archive/swapping dependencies are compiled out
 # entirely — nothing in the binary can overwrite a package-owned file.
 default = ["self-update"]
-self-update = ["dep:self-replace", "dep:flate2", "dep:tar", "dep:zip", "dep:minisign-verify"]
+self-update = [
+    "dep:self-replace",
+    "dep:flate2",
+    "dep:tar",
+    "dep:zip",
+    "dep:minisign-verify",
+]
 
 [dependencies]
 # GUI
@@ -81,7 +87,9 @@ lru = "0.19"
 self-replace = { version = "1", optional = true }
 flate2 = { version = "1", optional = true }
 tar = { version = "0.4", optional = true }
-zip = { version = "9", default-features = false, features = ["deflate"], optional = true }
+zip = { version = "9", default-features = false, features = [
+    "deflate",
+], optional = true }
 # Verifies the minisign signature on a release's SHA256SUMS before the updater
 # swaps the binary. Zero-dependency, pure Rust (no C toolchain), like the rest
 # of the updater. Optional so `--no-default-features` builds drop it.
@@ -104,7 +112,9 @@ calamine = "0.38"
 #   [patch."https://github.com/rust-man-org/rustman-engine"]
 #   rustman-engine = { path = "../rust-man-org/rustman-engine" }
 rustman-engine = { git = "https://github.com/rust-man-org/rustman-engine", tag = "v0.1.0" }
-rustls = { version = "0.23.43", default-features = false, features = ["aws_lc_rs"] }
+rustls = { version = "0.23.43", default-features = false, features = [
+    "aws_lc_rs",
+] }
 
 [dev-dependencies]
 # The spreadsheet tests hand-build a minimal .xlsx at runtime. In normal
