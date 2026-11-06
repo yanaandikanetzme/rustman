@@ -558,6 +558,10 @@ pub(super) fn handle(state: &mut AppState, msg: SidebarMsg) -> Task<Message> {
                     .find(|r| r.id == id)
                     .cloned();
                 if let Some(req) = opened {
+                    if super::examples::protect(state) {
+                        return Task::none();
+                    }
+                    state.examples.editor = None;
                     state.close_environment_workspace();
                     let req = crate::app::drafts::effective_request(state, &req);
                     state.sidebar.selected_request = Some(req.id.clone());

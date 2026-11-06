@@ -877,6 +877,26 @@ mod tests {
     }
 
     #[test]
+    fn clicking_the_request_row_leaves_a_saved_example_but_not_a_dirty_one() {
+        let (mut s, dir, id) = setup();
+        apply(&mut s, ExampleMsg::Create(id.clone())).unwrap();
+        apply(&mut s, ExampleMsg::Name("Unsaved example".into())).unwrap();
+        let click =
+            |id: &str| Message::Sidebar(crate::message::SidebarMsg::ItemDragStart(id.to_owned()));
+        let _ = super::super::update(&mut s, click(&id));
+        assert!(s.examples.editor.as_ref().unwrap().confirm_discard);
+        let _ = super::super::update(
+            &mut s,
+            Message::Request(crate::message::RequestMsg::SaveRequest),
+        );
+        assert!(!dirty(&s));
+        let _ = super::super::update(&mut s, click(&id));
+        assert!(s.examples.editor.is_none());
+        drop(s);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn endpoint_example_send_and_navigation_do_not_touch_hidden_request() {
         let (mut s, dir, id) = setup();
         apply(&mut s, ExampleMsg::Create(id)).unwrap();
