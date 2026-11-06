@@ -24,8 +24,8 @@ pub fn key(id: &str, create: bool) -> Result<Vec<u8>, String> {
             Ok(key) if key.len() == 32 => Ok(key),
             Ok(_) => Err("Database encryption key has an invalid length".into()),
             Err(keyring::Error::NoEntry) if create => {
-                use aes_gcm::aead::{KeyInit, OsRng};
-                let key = aes_gcm::Aes256Gcm::generate_key(OsRng).to_vec();
+                use aes_gcm::aead::{Generate, Key};
+                let key = Key::<aes_gcm::Aes256Gcm>::generate().to_vec();
                 entry.set_secret(&key).map_err(|_| "Could not save database key in OS credential store".to_owned())?;
                 // Read back: never persist encrypted data against an unconfirmed key.
                 let stored = entry.get_secret().map_err(|_| "Could not verify database key in OS credential store".to_owned())?;
@@ -41,7 +41,7 @@ pub fn key(id: &str, create: bool) -> Result<Vec<u8>, String> {
 // Unit tests use only ephemeral keys, never a user's credential store.
 #[cfg(test)]
 pub fn key(id: &str, create: bool) -> Result<Vec<u8>, String> {
-    use aes_gcm::aead::{KeyInit, OsRng};
+    use aes_gcm::aead::{Generate, Key};
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
     static KEYS: OnceLock<Mutex<HashMap<String, Vec<u8>>>> = OnceLock::new();
@@ -52,7 +52,7 @@ pub fn key(id: &str, create: bool) -> Result<Vec<u8>, String> {
     if !create {
         return Err("Database encryption key is missing".into());
     }
-    let key = aes_gcm::Aes256Gcm::generate_key(OsRng).to_vec();
+    let key = Key::<aes_gcm::Aes256Gcm>::generate().to_vec();
     keys.insert(id.into(), key.clone());
     Ok(key)
 }
