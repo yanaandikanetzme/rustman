@@ -91,7 +91,7 @@ minisign-verify = { version = "0.3", optional = true }
 # Misc
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
-dirs = "6"
+dirs = "7"
 open = "5"
 rfd = "0.17"
 
