@@ -653,25 +653,29 @@ fn highlight(code: &str) -> Vec<(String, iced::Color)> {
 }
 
 fn view_more_pill<'a>(label: &'a str, key: String) -> Element<'a, Message> {
-    button(text(label).size(12).color(Palette::text()))
-        .on_press(docs_msg(SidebarMsg::DocsToggled(key)))
-        .padding([4, 12])
-        .style(|_, status| button::Style {
-            background: Some(Background::Color(
-                if matches!(status, button::Status::Hovered) {
-                    Palette::hover()
-                } else {
-                    Palette::surface_high()
-                },
-            )),
-            border: Border {
-                color: Palette::border(),
-                width: 1.0,
-                radius: 12.0.into(),
+    button(
+        text(label)
+            .size(12)
+            .font(UI_FONT_MEDIUM)
+            .color(Palette::text()),
+    )
+    .on_press(docs_msg(SidebarMsg::DocsToggled(key)))
+    .padding([4, 10])
+    .style(|_, status| button::Style {
+        background: Some(Background::Color(
+            if matches!(status, button::Status::Hovered) {
+                Palette::hover()
+            } else {
+                Palette::surface_high()
             },
+        )),
+        border: Border {
+            radius: 12.0.into(),
             ..Default::default()
-        })
-        .into()
+        },
+        ..Default::default()
+    })
+    .into()
 }
 
 /// A read-only code card, Postman's: language chip, Wrap and Copy at the
@@ -684,8 +688,9 @@ fn code_block<'a>(
 ) -> Element<'a, Message> {
     use iced::widget::text::Span;
     let expanded = docs.expanded.contains(&key);
-    let wrap_key = format!("{key}:nowrap");
-    let wrapped = !docs.expanded.contains(&wrap_key);
+    // Postman's default: long lines run off the card until Wrap is on.
+    let wrap_key = format!("{key}:wrap");
+    let wrapped = docs.expanded.contains(&wrap_key);
     let long = content.lines().count() > COLLAPSED_LINES;
     let shown: String = if content.is_empty() {
         "(empty)".to_owned()
@@ -723,8 +728,10 @@ fn code_block<'a>(
         // Bands of the card's colour, each more opaque: the fade.
         let bg = Palette::background();
         let mut fade = column![].width(Length::Fill);
-        for alpha in [0.15, 0.35, 0.55, 0.75, 0.9] {
-            fade = fade.push(container(Space::new()).width(Length::Fill).height(8).style(
+        for step in 1..=14 {
+            let t = step as f32 / 14.0;
+            let alpha = t * t * (3.0 - 2.0 * t) * 0.96;
+            fade = fade.push(container(Space::new()).width(Length::Fill).height(5).style(
                 move |_| container::Style {
                     background: Some(Background::Color(iced::Color { a: alpha, ..bg })),
                     ..Default::default()
@@ -735,7 +742,7 @@ fn code_block<'a>(
             fade,
             container(view_more_pill("View More", key.clone()))
                 .center_x(Length::Fill)
-                .padding(iced::padding::top(14)),
+                .padding(iced::padding::top(40)),
         ];
         iced::widget::stack![
             code,
