@@ -36,7 +36,15 @@ pub fn collection_rename_input_id(collection_id: &str) -> iced::widget::Id {
 
 #[derive(Debug, Clone)]
 pub struct SidebarState {
-    pub collection_delete_id: Option<String>,
+    /// Collections awaiting delete confirmation (empty = no dialog). More
+    /// than one when a Shift/Ctrl multi-selection is deleted at once.
+    pub collection_delete_ids: Vec<String>,
+    /// Collections picked with Ctrl/Shift-click, in sidebar order.
+    pub selected_collections: Vec<String>,
+    /// Last collection clicked without Shift: the start of a Shift range.
+    pub selection_anchor: Option<String>,
+    /// Keyboard modifiers currently held (Shift/Ctrl-click in the tree).
+    pub modifiers: iced::keyboard::Modifiers,
     pub collection_delete_text: String,
     /// Second layer of collection deletion: the warning was accepted and
     /// the type-`delete` box is showing.
@@ -88,7 +96,10 @@ pub struct SidebarState {
 impl Default for SidebarState {
     fn default() -> Self {
         Self {
-            collection_delete_id: None,
+            collection_delete_ids: Vec::new(),
+            selected_collections: Vec::new(),
+            selection_anchor: None,
+            modifiers: iced::keyboard::Modifiers::default(),
             collection_delete_text: String::new(),
             collection_delete_typing: false,
             request_delete: None,

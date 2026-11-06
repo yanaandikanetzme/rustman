@@ -50,8 +50,11 @@ pub(crate) fn subscription(state: &AppState) -> Subscription<Message> {
     if state.palette_anim.is_some() {
         all.push(iced::window::frames().map(|t| Message::Palette(PaletteMsg::Frame(t))));
     }
-    if state.sidebar.collection_delete_id.is_some() {
+    all.push(event::listen_with(modifier_keys));
+    if !state.sidebar.collection_delete_ids.is_empty() {
         all.push(event::listen_with(collection_delete_keys));
+    } else if !state.sidebar.selected_collections.is_empty() {
+        all.push(event::listen_with(collection_selection_keys));
     }
     if state.sidebar.request_delete.is_some() {
         all.push(event::listen_with(request_delete_keys));
@@ -109,6 +112,47 @@ fn import_events(event: Event, _status: event::Status, _window: window::Id) -> O
         }) if modifiers.command() => Some(Message::Import(ImportMsg::Submit)),
         Event::Window(window::Event::FileDropped(path)) => {
             Some(Message::Import(ImportMsg::PathsSelected(vec![path])))
+        }
+        _ => None,
+    }
+}
+
+/// Track held Shift/Ctrl for multi-select clicks in the collection tree.
+/// Focus loss resets them, so a modifier released elsewhere is not stuck.
+fn modifier_keys(event: Event, _status: event::Status, _window: window::Id) -> Option<Message> {
+    use crate::message::SidebarMsg;
+    match event {
+        Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => {
+            Some(Message::Sidebar(SidebarMsg::ModifiersChanged(m)))
+        }
+        Event::Window(window::Event::Unfocused) => Some(Message::Sidebar(
+            SidebarMsg::ModifiersChanged(keyboard::Modifiers::default()),
+        )),
+        _ => None,
+    }
+}
+
+/// With collections multi-selected: Delete asks to delete them all, Escape
+/// clears the selection. Keys a focused text field consumed are ignored.
+fn collection_selection_keys(
+    event: Event,
+    status: event::Status,
+    _window: window::Id,
+) -> Option<Message> {
+    use crate::message::SidebarMsg;
+    use keyboard::key::Named;
+    if status == event::Status::Captured {
+        return None;
+    }
+    let Event::Keyboard(keyboard::Event::KeyPressed { key, .. }) = event else {
+        return None;
+    };
+    match key.as_ref() {
+        keyboard::Key::Named(Named::Delete) => {
+            Some(Message::Sidebar(SidebarMsg::DeleteSelectedCollections))
+        }
+        keyboard::Key::Named(Named::Escape) => {
+            Some(Message::Sidebar(SidebarMsg::CollectionSelectionCleared))
         }
         _ => None,
     }
