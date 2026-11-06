@@ -119,6 +119,10 @@ fn panel(state: &AppState) -> Element<'_, Message> {
         bottom: 2.0,
         left: TREE_PAD_X,
     });
+    let header: Element<Message> = match selection_bar(state) {
+        Some(bar) => column![header, bar].into(),
+        None => header.into(),
+    };
     let mut tree = column![].spacing(0);
     if !state.sidebar.collections_collapsed {
         if state.drafts.only_drafts {
@@ -163,11 +167,8 @@ fn panel(state: &AppState) -> Element<'_, Message> {
                 .into(),
         )
     };
-    let sections = crate::ui::components::molecules::sidebar_sections(
-        header.into(),
-        body,
-        environments.into(),
-    );
+    let sections =
+        crate::ui::components::molecules::sidebar_sections(header, body, environments.into());
 
     // Releasing the mouse anywhere over the tree ends any running drag.
     mouse_area(
@@ -1045,4 +1046,81 @@ fn ctx_item(label: &'static str, msg: Message, danger: bool) -> Element<'static,
         _ => icons::trash(),
     };
     menu_item(Some(icon), label, Some(msg), danger)
+}
+
+/// Shown while collections are Shift/Ctrl-selected: how many, a Delete for
+/// all of them (works even when the Delete key goes to a focused field) and
+/// a clear button. `None` without a selection.
+fn selection_bar(state: &AppState) -> Option<Element<'_, Message>> {
+    let n = state
+        .collections
+        .iter()
+        .filter(|c| state.sidebar.selected_collections.contains(&c.id))
+        .count();
+    if n == 0 {
+        return None;
+    }
+    let delete = button(
+        row![
+            icons::trash().size(12).color(Palette::ERROR),
+            text("Delete").size(12).color(Palette::ERROR),
+        ]
+        .spacing(5)
+        .align_y(iced::Alignment::Center),
+    )
+    .on_press(Message::Sidebar(SidebarMsg::DeleteSelectedCollections))
+    .padding([3, 8])
+    .style(|_, status| iced::widget::button::Style {
+        background: matches!(status, iced::widget::button::Status::Hovered)
+            .then(|| Palette::error_soft().into()),
+        text_color: Palette::ERROR,
+        border: iced::Border {
+            radius: 4.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let clear = crate::ui::widgets::mini::icon_button(
+        icons::close(),
+        "Clear selection (Esc)",
+        Some(Message::Sidebar(SidebarMsg::CollectionSelectionCleared)),
+        false,
+    );
+    let bar = container(
+        row![
+            text(if n == 1 {
+                "1 collection selected".to_owned()
+            } else {
+                format!("{n} collections selected")
+            })
+            .size(12)
+            .font(UI_FONT_MEDIUM)
+            .color(Palette::accent()),
+            Space::new().width(Length::Fill),
+            delete,
+            clear,
+        ]
+        .spacing(4)
+        .align_y(iced::Alignment::Center),
+    )
+    .padding([4, 8])
+    .width(Length::Fill)
+    .style(|_| container::Style {
+        background: Some(Palette::accent_soft().into()),
+        border: iced::Border {
+            radius: 6.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    Some(
+        container(bar)
+            .padding(Padding {
+                top: 2.0,
+                right: TREE_PAD_X,
+                bottom: 4.0,
+                left: TREE_PAD_X,
+            })
+            .into(),
+    )
 }

@@ -58,7 +58,7 @@ pub fn tree_row<'a, M: Clone + 'a, R: iced::advanced::Renderer + 'a>(
                 text_color: Some(Palette::text()),
                 border: Border {
                     color: Palette::accent(),
-                    width: if fill == RowFill::DropTarget {
+                    width: if matches!(fill, RowFill::DropTarget | RowFill::Selected) {
                         1.0
                     } else {
                         0.0
