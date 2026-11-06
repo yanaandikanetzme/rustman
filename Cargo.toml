@@ -61,6 +61,8 @@ serde_yaml = "0.9"
 
 # Storage
 rusqlite = { version = "0.39", features = ["bundled"] }
+aes-gcm = "0.10.3"
+keyring = { version = "3.6.3", features = ["windows-native", "apple-native", "sync-secret-service", "crypto-rust", "vendored"] }
 
 # Git VCS for collections
 git2 = { version = "0.21", features = ["vendored-libgit2", "vendored-openssl"] }

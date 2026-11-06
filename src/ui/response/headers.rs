@@ -92,7 +92,10 @@ fn line<'a>(key: &str, value: &str) -> Element<'a, Message> {
     row![
         cell(key.to_owned(), Palette::text()),
         Space::new().width(0),
-        cell(value.to_owned(), Palette::text_muted()),
+        cell(
+            crate::services::variables::preview(key, value),
+            Palette::text_muted()
+        ),
     ]
     .align_y(Alignment::Center)
     .width(Length::Fill)

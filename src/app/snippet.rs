@@ -220,10 +220,36 @@ fn resolved_input(
     }
     for field in &mut input.form_fields {
         field.key = resolve(&field.key);
-        field.value = resolve(&field.value);
+        field.value = if redact && crate::services::variables::sensitive(&field.key) {
+            MASK.into()
+        } else {
+            resolve(&field.value)
+        };
         field.file_name = field.file_name.as_deref().map(resolve);
     }
     input.body = input.body.as_deref().map(resolve);
+    if redact {
+        input.url = crate::services::secrets::display_url(&input.url);
+        if tab.body_type == BodyType::UrlEncoded {
+            let pairs: Vec<String> = tab
+                .form_fields
+                .iter()
+                .filter(|f| f.enabled && !f.key.is_empty())
+                .map(|f| {
+                    let key = resolve(&f.key);
+                    let value = if crate::services::variables::sensitive(&key) {
+                        MASK.into()
+                    } else {
+                        resolve(&f.value)
+                    };
+                    format!("{}={}", form_encode(&key), form_encode(&value))
+                })
+                .collect();
+            input.body = (!pairs.is_empty()).then(|| pairs.join("&"));
+        } else if let Some(body) = &mut input.body {
+            *body = crate::services::secrets::redact_json_fields(body);
+        }
+    }
     input.bearer_token = input.bearer_token.as_deref().map(resolve);
     input.basic_user = input.basic_user.as_deref().map(resolve);
     input.basic_pass = input.basic_pass.as_deref().map(resolve);
@@ -260,6 +286,36 @@ pub(crate) fn refresh(state: &mut AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn security_snippet_form_password_is_masked_but_explicit_copy_preserves_it() {
+        use crate::domain::request::{FormField, FormFieldType};
+        let mut tab = RequestTabState::new();
+        tab.set_url("https://example.test/login".into());
+        tab.form_fields = vec![FormField {
+            id: "f".into(),
+            key: "password".into(),
+            value: "synthetic-form-password".into(),
+            field_type: FormFieldType::Text,
+            enabled: true,
+            file_name: None,
+            file_data: None,
+            mime_type: None,
+            description: String::new(),
+        }];
+        for body_type in [BodyType::UrlEncoded, BodyType::FormData] {
+            tab.body_type = body_type;
+            let input = resolved_input(&tab, None, true).unwrap();
+            let preview = crate::services::snippet::generate(Lang::Curl, &input);
+            assert!(!preview.contains("synthetic-form-password"));
+            assert!(
+                code(&tab, Lang::Curl, None)
+                    .unwrap()
+                    .contains("synthetic-form-password")
+            );
+            assert_eq!(tab.form_fields[0].value, "synthetic-form-password");
+        }
+    }
 
     #[test]
     fn urlencoded_body_is_encoded_with_its_content_type() {

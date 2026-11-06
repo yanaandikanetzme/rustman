@@ -15,9 +15,15 @@ pub fn sensitive(key: &str) -> bool {
         "apikey",
         "authorization",
         "cookie",
+        "session",
+        "credential",
+        "access_key",
+        "private_key",
+        "jwt",
     ]
     .iter()
     .any(|part| key.contains(part))
+        || matches!(key.as_str(), "sid" | "auth")
 }
 
 pub fn preview(key: &str, value: &str) -> String {

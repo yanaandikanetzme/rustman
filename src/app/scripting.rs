@@ -70,7 +70,38 @@ pub(crate) fn test_host_input(
 /// `SetHeader`, `SetBody`, and `Test` are just returned for the caller to use
 /// (a pre-request send merges headers into the outgoing request and can
 /// override its body; a completed response stores test results on the tab).
+fn diagnostic_redactor(state: &AppState) -> crate::services::secrets::Redactor {
+    let mut redactor = crate::services::secrets::Redactor::default();
+    // Include all tabs: a response can arrive after the user switches tabs.
+    for tab in &state.tabs.tabs {
+        for value in [
+            &tab.bearer_token,
+            &tab.basic_pass,
+            &tab.api_key_value,
+            &tab.jwt_secret,
+            &tab.cookie_string,
+        ] {
+            redactor.add(value);
+        }
+        for (_, value) in cookie_pairs(tab) {
+            redactor.add(&value);
+        }
+        for header in &tab.headers {
+            redactor.add_header(&header.key, &header.value);
+        }
+    }
+    for env in &state.environments {
+        for (key, value) in &env.variables {
+            if crate::services::variables::sensitive(key) {
+                redactor.add(value);
+            }
+        }
+    }
+    redactor
+}
+
 pub(crate) fn apply_effects(state: &mut AppState, effects: Vec<Effect>) -> AppliedEffects {
+    let mut redactor = diagnostic_redactor(state);
     let mut extra_headers = Vec::new();
     let mut test_results = Vec::new();
     let mut body_override = None;
@@ -79,11 +110,17 @@ pub(crate) fn apply_effects(state: &mut AppState, effects: Vec<Effect>) -> Appli
 
     for effect in effects {
         match effect {
-            Effect::SetHeader(name, value) => extra_headers.push((name, value)),
+            Effect::SetHeader(name, value) => {
+                redactor.add_header(&name, &value);
+                extra_headers.push((name, value));
+            }
             Effect::SetBody(value) => body_override = Some(value),
             Effect::Test { name, passed } => test_results.push(TestResult { name, passed }),
             Effect::Log(text) => logs.push(text),
             Effect::SetEnv(name, value) => {
+                if crate::services::variables::sensitive(&name) {
+                    redactor.add(&value);
+                }
                 if let Some(env) = state.environments.iter_mut().find(|e| e.is_active) {
                     env.variables.insert(name, value);
                     env_changed = true;
@@ -99,6 +136,12 @@ pub(crate) fn apply_effects(state: &mut AppState, effects: Vec<Effect>) -> Appli
         let _ = crate::services::storage::save_environment(db, env);
     }
 
+    for log in &mut logs {
+        *log = redactor.redact(log);
+    }
+    for test in &mut test_results {
+        test.name = redactor.redact(&test.name);
+    }
     AppliedEffects {
         extra_headers,
         test_results,
@@ -120,9 +163,30 @@ pub(crate) fn run_and_apply(
     if script_text.trim().is_empty() {
         return Ok(AppliedEffects::default());
     }
+    let mut redactor = diagnostic_redactor(state);
+    for (name, value) in &host_input.headers {
+        redactor.add_header(name, value);
+    }
+    for (_, value) in &host_input.cookies {
+        redactor.add(value);
+    }
+    for (name, value) in &host_input.env_vars {
+        if crate::services::variables::sensitive(name) {
+            redactor.add(value);
+        }
+    }
     match rustman_engine::run(script_text, host_input) {
-        Ok(outcome) => Ok(apply_effects(state, outcome.effects)),
-        Err(err) => Err(err.to_string()),
+        Ok(outcome) => {
+            let mut applied = apply_effects(state, outcome.effects);
+            for log in &mut applied.logs {
+                *log = redactor.redact(log);
+            }
+            for test in &mut applied.test_results {
+                test.name = redactor.redact(&test.name);
+            }
+            Ok(applied)
+        }
+        Err(err) => Err(redactor.redact(&err.to_string())),
     }
 }
 
@@ -176,6 +240,60 @@ mod tests {
     use super::*;
     use crate::domain::request::KeyValue;
     use std::collections::HashMap;
+
+    #[test]
+    fn security_script_response_cookie_and_new_auth_header_are_redacted() {
+        let dir =
+            std::env::temp_dir().join(format!("rustman-response-redact-{}", uuid::Uuid::new_v4()));
+        let (mut state, _) = crate::app::boot::init_at(dir.clone());
+        let mut response = HttpResponse::default();
+        response.headers.insert(
+            "set-cookie".into(),
+            "sid=synthetic-response-cookie; HttpOnly".into(),
+        );
+        let input = test_host_input(state.tabs.active_tab(), None, &response);
+        let applied = run_and_apply(&mut state, "print(header(\"set-cookie\"));", input).unwrap();
+        assert!(
+            !applied
+                .logs
+                .join("\n")
+                .contains("synthetic-response-cookie")
+        );
+        let applied = apply_effects(
+            &mut state,
+            vec![
+                Effect::SetHeader("Authorization".into(), "synthetic-new-auth".into()),
+                Effect::Log("synthetic-new-auth".into()),
+            ],
+        );
+        assert!(!applied.logs[0].contains("synthetic-new-auth"));
+        assert_eq!(applied.extra_headers[0].1, "synthetic-new-auth");
+        drop(state);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn security_script_logs_redact_secrets_without_mutating_request() {
+        let dir = std::env::temp_dir().join(format!("rustman-redaction-{}", uuid::Uuid::new_v4()));
+        let (mut state, _) = crate::app::boot::init_at(dir.clone());
+        let secret = "synthetic-cookie-secret";
+        state.tabs.active_tab_mut().cookie_string = format!("session={secret}");
+        state.tabs.active_tab_mut().bearer_token = "synthetic-bearer-secret".into();
+        let applied = apply_effects(
+            &mut state,
+            vec![Effect::Log(format!(
+                "cookie {secret}; token synthetic-bearer-secret"
+            ))],
+        );
+        assert!(!applied.logs[0].contains(secret));
+        assert!(!applied.logs[0].contains("synthetic-bearer-secret"));
+        assert_eq!(
+            state.tabs.active_tab().cookie_string,
+            format!("session={secret}")
+        );
+        drop(state);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     fn env(vars: &[(&str, &str)]) -> AppEnvironment {
         AppEnvironment {

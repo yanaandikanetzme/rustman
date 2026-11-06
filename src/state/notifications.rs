@@ -1,4 +1,10 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToastKind {
+    Success,
+    Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToastPlacement {
     BottomLeft,
     BottomRight,
@@ -6,6 +12,7 @@ pub enum ToastPlacement {
 
 #[derive(Debug, Clone)]
 pub struct Toast {
+    pub kind: ToastKind,
     pub placement: ToastPlacement,
     pub id: String,
     pub title: String,

@@ -406,7 +406,7 @@ fn handle_layout(state: &mut AppState, msg: LayoutMsg) -> Task<Message> {
                 state.active_env(),
             ) {
                 Ok(cmd) => {
-                    state.status_message = Some("Code snippet copied!".to_owned());
+                    state.status_message = Some("Unmasked snippet copied".to_owned());
                     iced::clipboard::write::<Message>(cmd)
                 }
                 Err(err) => {

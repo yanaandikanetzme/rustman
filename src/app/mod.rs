@@ -34,6 +34,7 @@ pub enum ImportSource {
 }
 
 pub struct AppState {
+    pub browser_previews: Vec<crate::services::preview_file::PreviewFile>,
     pub environment_cell: Option<crate::state::environment_cell::EnvironmentCellEditor>,
     pub console_open: bool,
     pub notification: Option<crate::state::notifications::Toast>,

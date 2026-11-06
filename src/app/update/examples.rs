@@ -217,6 +217,7 @@ fn apply(state: &mut AppState, msg: ExampleMsg) -> Result<(), String> {
             if let Some(editor) = &mut state.examples.editor {
                 editor.data = data;
                 editor.dirty = false;
+                editor.revealed_headers.clear();
                 editor.confirm_discard = false;
                 editor.confirm_delete = false;
             }
@@ -280,6 +281,7 @@ fn apply(state: &mut AppState, msg: ExampleMsg) -> Result<(), String> {
             match other {
                 ExampleMsg::Name(v) => editor.data.name = v,
                 ExampleMsg::Url(v) => {
+                    editor.revealed_headers.clear();
                     editor.data.request.url = v;
                     editor.data.request.params = crate::domain::request::sync_params_from_url(
                         &editor.data.request.url,
@@ -315,6 +317,7 @@ fn apply(state: &mut AppState, msg: ExampleMsg) -> Result<(), String> {
                     *body = crate::state::tabs::make_code_editor(&formatted, "json");
                 }
                 ExampleMsg::HeaderKey(side, i, v) => {
+                    editor.revealed_headers.clear();
                     if let Some(h) = headers(editor, side).get_mut(i) {
                         h.key = v;
                     }
@@ -325,16 +328,28 @@ fn apply(state: &mut AppState, msg: ExampleMsg) -> Result<(), String> {
                     }
                 }
                 ExampleMsg::HeaderAdd(side) => {
+                    editor.revealed_headers.clear();
                     headers(editor, side).push(crate::domain::request::KeyValue::new_empty())
                 }
                 ExampleMsg::HeaderRemove(side, i) => {
+                    editor.revealed_headers.clear();
                     let rows = headers(editor, side);
                     if i < rows.len() {
                         rows.remove(i);
                     }
                 }
+                ExampleMsg::HeaderReveal(side, i) => {
+                    changed = false;
+                    let sensitive = headers(editor, side)
+                        .get(i)
+                        .is_some_and(|h| crate::services::variables::sensitive(&h.key));
+                    if sensitive && !editor.revealed_headers.remove(&(side, i)) {
+                        editor.revealed_headers.insert((side, i));
+                    }
+                }
                 ExampleMsg::ShowHeaders(side, show) => {
                     changed = false;
+                    editor.revealed_headers.clear();
                     match side {
                         HeaderSide::Request => {
                             editor.request_show_headers = show;
@@ -410,6 +425,270 @@ mod tests {
         state.collections.push(col);
         state.requests.insert("col".into(), vec![req]);
         (state, dir, id)
+    }
+
+    #[test]
+    fn security_example_reveal_is_explicit_temporary_and_never_changes_saved_values() {
+        let (mut s, dir, id) = setup();
+        apply(&mut s, ExampleMsg::Create(id)).unwrap();
+        apply(&mut s, ExampleMsg::HeaderAdd(HeaderSide::Response)).unwrap();
+        apply(
+            &mut s,
+            ExampleMsg::HeaderKey(HeaderSide::Response, 0, "set-cookie".into()),
+        )
+        .unwrap();
+        apply(
+            &mut s,
+            ExampleMsg::HeaderValue(HeaderSide::Response, 0, "sid=synthetic-debug-cookie".into()),
+        )
+        .unwrap();
+        apply(&mut s, ExampleMsg::Save).unwrap();
+        apply(&mut s, ExampleMsg::HeaderReveal(HeaderSide::Response, 0)).unwrap();
+        let e = s.examples.editor.as_ref().unwrap();
+        assert!(
+            e.revealed_headers.contains(&(HeaderSide::Response, 0)),
+            "eye click must reveal only selected field"
+        );
+        assert!(!e.dirty, "visibility is not a content edit");
+        assert_eq!(e.response_headers[0].value, "sid=synthetic-debug-cookie");
+        apply(&mut s, ExampleMsg::ShowHeaders(HeaderSide::Response, false)).unwrap();
+        assert!(
+            s.examples
+                .editor
+                .as_ref()
+                .unwrap()
+                .revealed_headers
+                .is_empty()
+        );
+        apply(&mut s, ExampleMsg::HeaderReveal(HeaderSide::Response, 0)).unwrap();
+        apply(&mut s, ExampleMsg::Save).unwrap();
+        assert!(
+            s.examples
+                .editor
+                .as_ref()
+                .unwrap()
+                .revealed_headers
+                .is_empty()
+        );
+        assert_eq!(
+            storage::examples::load(s.db.as_ref().unwrap()).unwrap()[0]
+                .response
+                .headers["set-cookie"],
+            "sid=synthetic-debug-cookie"
+        );
+        drop(s);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn security_example_eye_isolated_no_network_and_no_database_write() {
+        let (mut s, dir, id) = setup();
+        apply(&mut s, ExampleMsg::Create(id)).unwrap();
+        for (side, key, value) in [
+            (HeaderSide::Request, "Authorization", "Bearer {{TOKEN}}"),
+            (HeaderSide::Response, "Set-Cookie", "sid=synthetic-cookie"),
+            (HeaderSide::Params, "api_key", "{{TOKEN}}"),
+        ] {
+            apply(&mut s, ExampleMsg::HeaderAdd(side)).unwrap();
+            apply(&mut s, ExampleMsg::HeaderKey(side, 0, key.into())).unwrap();
+            apply(&mut s, ExampleMsg::HeaderValue(side, 0, value.into())).unwrap();
+        }
+        apply(&mut s, ExampleMsg::Save).unwrap();
+        let example_id = s.examples.editor.as_ref().unwrap().data.id.clone();
+        let original_parent = serde_json::to_string(&s.requests["col"][0]).unwrap();
+        let raw_before: String =
+            s.db.as_ref()
+                .unwrap()
+                .query_row(
+                    "SELECT data FROM request_examples WHERE id=?1",
+                    [&example_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+        for side in [
+            HeaderSide::Request,
+            HeaderSide::Response,
+            HeaderSide::Params,
+        ] {
+            let task = handle(&mut s, ExampleMsg::HeaderReveal(side, 0));
+            assert_eq!(task.units(), 0, "eye must not schedule outgoing work");
+            assert!(
+                s.http_client.get().is_none(),
+                "reveal must not initialize HTTP client"
+            );
+            let e = s.examples.editor.as_ref().unwrap();
+            assert_eq!(e.revealed_headers.len(), 1);
+            assert!(e.revealed_headers.contains(&(side, 0)));
+            assert!(!e.dirty);
+            apply(&mut s, ExampleMsg::HeaderReveal(side, 0)).unwrap();
+            assert!(
+                s.examples
+                    .editor
+                    .as_ref()
+                    .unwrap()
+                    .revealed_headers
+                    .is_empty(),
+                "second click must hide"
+            );
+        }
+        let _ = handle(
+            &mut s,
+            ExampleMsg::HeaderReveal(HeaderSide::Response, usize::MAX),
+        );
+        assert!(
+            s.examples
+                .editor
+                .as_ref()
+                .unwrap()
+                .revealed_headers
+                .is_empty()
+        );
+        let raw_after: String =
+            s.db.as_ref()
+                .unwrap()
+                .query_row(
+                    "SELECT data FROM request_examples WHERE id=?1",
+                    [&example_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+        assert_eq!(
+            raw_before, raw_after,
+            "visibility must not even rewrite ciphertext"
+        );
+        assert_eq!(
+            serde_json::to_string(&s.requests["col"][0]).unwrap(),
+            original_parent
+        );
+        let e = s.examples.editor.as_ref().unwrap();
+        assert_eq!(e.request_headers[0].value, "Bearer {{TOKEN}}");
+        assert_eq!(
+            e.data.request.params[0].value, "{{TOKEN}}",
+            "eye must preserve template"
+        );
+        apply(&mut s, ExampleMsg::HeaderReveal(HeaderSide::Response, 0)).unwrap();
+        apply(&mut s, ExampleMsg::Close).unwrap();
+        apply(&mut s, ExampleMsg::Open(example_id)).unwrap();
+        assert!(
+            s.examples
+                .editor
+                .as_ref()
+                .unwrap()
+                .revealed_headers
+                .is_empty(),
+            "new editor defaults hidden"
+        );
+        drop(s);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn security_example_eye_row_changes_cannot_reveal_a_different_secret() {
+        let (mut s, dir, id) = setup();
+        apply(&mut s, ExampleMsg::Create(id)).unwrap();
+        for (i, key) in ["set-cookie", "x-api-key"].into_iter().enumerate() {
+            apply(&mut s, ExampleMsg::HeaderAdd(HeaderSide::Response)).unwrap();
+            apply(
+                &mut s,
+                ExampleMsg::HeaderKey(HeaderSide::Response, i, key.into()),
+            )
+            .unwrap();
+            apply(
+                &mut s,
+                ExampleMsg::HeaderValue(HeaderSide::Response, i, format!("synthetic-{i}")),
+            )
+            .unwrap();
+        }
+        apply(&mut s, ExampleMsg::HeaderReveal(HeaderSide::Response, 0)).unwrap();
+        apply(&mut s, ExampleMsg::HeaderRemove(HeaderSide::Response, 0)).unwrap();
+        assert!(
+            s.examples
+                .editor
+                .as_ref()
+                .unwrap()
+                .revealed_headers
+                .is_empty(),
+            "shifted row must not inherit reveal"
+        );
+        apply(&mut s, ExampleMsg::HeaderReveal(HeaderSide::Response, 0)).unwrap();
+        apply(
+            &mut s,
+            ExampleMsg::HeaderKey(HeaderSide::Response, 0, "Authorization".into()),
+        )
+        .unwrap();
+        assert!(
+            s.examples
+                .editor
+                .as_ref()
+                .unwrap()
+                .revealed_headers
+                .is_empty(),
+            "renamed field resets reveal"
+        );
+        apply(&mut s, ExampleMsg::HeaderReveal(HeaderSide::Response, 0)).unwrap();
+        apply(&mut s, ExampleMsg::HeaderAdd(HeaderSide::Response)).unwrap();
+        assert!(
+            s.examples
+                .editor
+                .as_ref()
+                .unwrap()
+                .revealed_headers
+                .is_empty()
+        );
+        drop(s);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn security_example_secrets_remain_original_and_encrypted_after_reopen() {
+        let (mut s, dir, id) = setup();
+        let req = s.requests["col"][0].clone();
+        s.tabs.open_request(&req);
+        let tab = s.tabs.active_tab_mut();
+        tab.auth_type = crate::domain::request::AuthType::Bearer;
+        tab.bearer_token = "synthetic-example-bearer".into();
+        tab.response = Some(HttpResponse {
+            status: 200,
+            body: "{\"ok\":true}".into(),
+            headers: std::collections::HashMap::from([
+                (
+                    "set-cookie".into(),
+                    "sid=synthetic-example-cookie; HttpOnly".into(),
+                ),
+                ("x-api-key".into(), "synthetic-example-api-key".into()),
+            ]),
+            ..Default::default()
+        });
+        apply(&mut s, ExampleMsg::SaveResponse).unwrap();
+        apply(&mut s, ExampleMsg::Save).unwrap();
+        let example_id = s.examples.editor.as_ref().unwrap().data.id.clone();
+        let raw: String =
+            s.db.as_ref()
+                .unwrap()
+                .query_row(
+                    "SELECT data FROM request_examples WHERE id=?1",
+                    [&example_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+        assert!(raw.starts_with("rustman:aes256gcm:v1:"));
+        assert!(!raw.contains("synthetic-example"));
+        drop(s);
+        let (mut s, _) = crate::app::boot::init_at(dir.clone());
+        apply(&mut s, ExampleMsg::Open(example_id)).unwrap();
+        let data = &s.examples.editor.as_ref().unwrap().data;
+        assert_eq!(data.request_id, id);
+        assert_eq!(data.request.bearer_token, "synthetic-example-bearer");
+        assert_eq!(
+            data.response.headers["set-cookie"],
+            "sid=synthetic-example-cookie; HttpOnly"
+        );
+        assert_eq!(
+            data.response.headers["x-api-key"],
+            "synthetic-example-api-key"
+        );
+        drop(s);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -86,7 +86,11 @@ pub fn view(tab: &RequestTabState) -> Element<'_, Message> {
             None
         };
         let name = name.to_string();
-        let value = value.to_string();
+        let value = if value.is_empty() {
+            String::new()
+        } else {
+            crate::services::variables::MASK.to_owned()
+        };
 
         col = col.push(
             container(

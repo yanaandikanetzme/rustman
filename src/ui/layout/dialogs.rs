@@ -424,7 +424,9 @@ pub(super) fn export_dialog(state: &AppState) -> Element<'_, Message> {
         Space::new().height(10),
         button(
             column![
-                text("Postman v2.1 collection").size(12).color(Color::WHITE),
+                text("Postman v2.1 collection (unmasked)")
+                    .size(12)
+                    .color(Color::WHITE),
                 text("For importing into Postman and compatible tools")
                     .size(10)
                     .color(Color {
@@ -443,7 +445,9 @@ pub(super) fn export_dialog(state: &AppState) -> Element<'_, Message> {
         Space::new().height(6),
         button(
             column![
-                text("Rustman JSON").size(12).color(Palette::text()),
+                text("Rustman JSON (unmasked)")
+                    .size(12)
+                    .color(Palette::text()),
                 text("Lossless native format — re-importable into Rustman")
                     .size(10)
                     .color(Palette::text_muted()),

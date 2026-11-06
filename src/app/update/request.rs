@@ -518,7 +518,7 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
             tab.ws.url = tab.url.clone();
             tab.ws.connecting = true;
             tab.ws.connected = false;
-            tab.ws.messages.clear();
+            tab.ws.clear_messages();
         }
         RequestMsg::WsDisconnect => {
             tab.ws.outgoing_tx = None;
@@ -528,7 +528,7 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
         RequestMsg::WsSend => {
             if let Some(tx) = tab.ws.outgoing_tx.clone() {
                 let msg = std::mem::take(&mut tab.ws.draft);
-                tab.ws.messages.push(crate::state::tabs::WsMessage {
+                tab.ws.push_message(crate::state::tabs::WsMessage {
                     text: msg.clone(),
                     is_outgoing: true,
                 });

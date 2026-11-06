@@ -24,7 +24,7 @@ const LIST_MAX: f32 = 274.0;
 pub fn view<'a>(state: &'a AppState, modal: &'a CollectionsModal) -> Element<'a, Message> {
     let (title, subtitle) = match modal.tab {
         ModalTab::Export => (
-            "Export collections",
+            "Export collections (unmasked)",
             "Choose the collections to export as Postman Collection v2.1.",
         ),
         ModalTab::Import => (

@@ -325,7 +325,7 @@ pub enum ResponseMsg {
     /// Render the current HTML response in the system browser.
     OpenBodyInBrowser,
     /// Result of `OpenBodyInBrowser`.
-    BodyOpened(Result<(), String>),
+    BodyOpened(Result<crate::services::preview_file::PreviewFile, String>),
     ViewerEdited(iced_code_editor::Message),
     ConsoleEdited(iced::widget::text_editor::Action),
     /// Step the response viewer one page (see `page_starts` in state/tabs).
@@ -352,9 +352,17 @@ pub enum ResponseTab {
 
 #[derive(Debug, Clone)]
 pub enum WsMsg {
-    TextFrame(String),
-    Disconnected,
-    Error(String),
+    TextFrame {
+        tab_id: String,
+        text: String,
+    },
+    Disconnected {
+        tab_id: String,
+    },
+    Error {
+        tab_id: String,
+        error: String,
+    },
     Handshake {
         tab_id: String,
         sender: mpsc::Sender<String>,
@@ -407,6 +415,7 @@ pub struct RepoSummary {
 
 #[derive(Debug, Clone)]
 pub struct GitView {
+    pub snapshot_error: Option<String>,
     pub summaries: Vec<RepoSummary>,
     pub status: Option<crate::services::vcs::RepoStatus>,
     pub branches: Vec<crate::services::vcs::BranchInfo>,

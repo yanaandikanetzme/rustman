@@ -13,20 +13,27 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
 
 pub fn load(conn: &Connection) -> Result<Vec<RequestExample>, String> {
     let mut stmt = conn
-        .prepare("SELECT data FROM request_examples ORDER BY rowid")
+        .prepare("SELECT id, data FROM request_examples ORDER BY rowid")
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([], |r| r.get::<_, String>(0))
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
         .map_err(|e| e.to_string())?;
     rows.map(|r| {
-        let data = r.map_err(|e| e.to_string())?;
+        let (id, data) = r.map_err(|e| e.to_string())?;
+        let data = super::vault::unseal(conn, "request_examples", "data", &id, &data)?;
         serde_json::from_str(&data).map_err(|e| e.to_string())
     })
     .collect()
 }
 
 pub fn save(conn: &Connection, example: &RequestExample) -> Result<(), String> {
-    let data = serde_json::to_string(example).map_err(|e| e.to_string())?;
+    let data = super::vault::seal(
+        conn,
+        "request_examples",
+        "data",
+        &example.id,
+        &serde_json::to_string(example).map_err(|e| e.to_string())?,
+    )?;
     conn.execute(
         "INSERT INTO request_examples (id, request_id, data) VALUES (?1, ?2, ?3)
         ON CONFLICT(id) DO UPDATE SET request_id=excluded.request_id, data=excluded.data",

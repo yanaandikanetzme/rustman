@@ -310,16 +310,55 @@ fn table(editor: &ExampleEditor, side: HeaderSide) -> Element<'_, Message> {
     ]
     .spacing(3);
     for (i, h) in rows.iter().enumerate() {
+        let sensitive = crate::services::variables::sensitive(&h.key);
+        let revealed = editor.revealed_headers.contains(&(side, i));
+        let reveal: Element<'_, Message> = if sensitive {
+            crate::ui::components::atoms::tooltip::tooltip(
+                button(
+                    if revealed {
+                        crate::ui::icons::eye_closed()
+                    } else {
+                        crate::ui::icons::eye()
+                    }
+                    .size(14)
+                    .color(Palette::text_muted()),
+                )
+                .on_press_maybe(
+                    (!h.value.is_empty()).then_some(msg(ExampleMsg::HeaderReveal(side, i))),
+                )
+                .padding(6)
+                .style(|_, status| button::Style {
+                    background: matches!(status, button::Status::Hovered | button::Status::Pressed)
+                        .then_some(Palette::hover().into()),
+                    text_color: Palette::text_muted(),
+                    border: Border {
+                        radius: 4.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
+                if revealed { "Hide value" } else { "Show value" },
+            )
+        } else {
+            Space::new().width(26).into()
+        };
         content = content.push(
             row![
                 text_input("Key", &h.key)
                     .style(crate::ui::styles::cell_input)
                     .size(12)
                     .on_input(move |v| msg(ExampleMsg::HeaderKey(side, i, v))),
-                text_input("Value", &h.value)
-                    .style(crate::ui::styles::cell_input)
-                    .size(12)
-                    .on_input(move |v| msg(ExampleMsg::HeaderValue(side, i, v))),
+                row![
+                    text_input("Value", &h.value)
+                        .secure(sensitive && !revealed)
+                        .style(crate::ui::styles::cell_input)
+                        .size(12)
+                        .on_input(move |v| msg(ExampleMsg::HeaderValue(side, i, v))),
+                    reveal,
+                ]
+                .spacing(4)
+                .width(Length::Fill)
+                .align_y(Alignment::Center),
                 Button::new("Remove")
                     .ghost()
                     .on_press(msg(ExampleMsg::HeaderRemove(side, i))),
