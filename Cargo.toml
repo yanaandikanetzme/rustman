@@ -41,7 +41,6 @@ reqwest = { version = "0.13", default-features = false, features = [
     "multipart",
     "stream",
     "rustls",
-    "rustls-native-certs",
 ] }
 
 # Async runtime (trimmed: task/select/sync/fs only — net, io, signal and
