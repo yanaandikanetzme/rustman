@@ -316,6 +316,7 @@ fn url_bar_get_curl_paste_does_not_keep_the_previous_request_credentials_or_body
         key: "X-Old".into(),
         value: "private".into(),
         enabled: true,
+        description: String::new(),
     });
     dispatch(
         &mut state,

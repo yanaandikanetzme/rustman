@@ -45,6 +45,16 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
         state.show_auto_headers = !state.show_auto_headers;
         return Task::none();
     }
+    if matches!(
+        &msg,
+        RequestMsg::HeaderSuggestOpened(..)
+            | RequestMsg::HeaderSuggestClosed
+            | RequestMsg::HeaderSuggestMoved(_)
+            | RequestMsg::HeaderSuggestAccepted
+            | RequestMsg::HeaderSuggestionPicked(..)
+    ) {
+        return handle_header_suggest(state, msg);
+    }
     let tab = state.tabs.active_tab_mut();
     record_undo(tab, &msg);
     match msg {
@@ -57,7 +67,12 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
         | RequestMsg::UrlVariableEnvironmentNameChanged(_)
         | RequestMsg::UrlVariableSave
         | RequestMsg::UrlVariableDismissed
-        | RequestMsg::AutoHeadersToggled => unreachable!("handled above"),
+        | RequestMsg::AutoHeadersToggled
+        | RequestMsg::HeaderSuggestOpened(..)
+        | RequestMsg::HeaderSuggestClosed
+        | RequestMsg::HeaderSuggestMoved(_)
+        | RequestMsg::HeaderSuggestAccepted
+        | RequestMsg::HeaderSuggestionPicked(..) => unreachable!("handled above"),
         RequestMsg::TitleChanged(value) => {
             if tab.title != value {
                 tab.title = value;
@@ -319,6 +334,7 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
             tab.modified = true;
         }
         RequestMsg::HeaderRemoved(i) => {
+            tab.header_suggest = None;
             tab.headers.remove(i);
             tab.modified = true;
         }
@@ -337,9 +353,16 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
         RequestMsg::HeaderKeyChanged(i, v) => {
             tab.headers[i].key = v;
             tab.modified = true;
+            open_suggest(tab, i, crate::state::tabs::SuggestField::Key);
         }
         RequestMsg::HeaderValueChanged(i, v) => {
             tab.headers[i].value = v;
+            tab.modified = true;
+            open_suggest(tab, i, crate::state::tabs::SuggestField::Value);
+        }
+        RequestMsg::HeaderDescriptionChanged(i, v) => {
+            tab.header_suggest = None;
+            tab.headers[i].description = v;
             tab.modified = true;
         }
         RequestMsg::ParamAdded => {
@@ -882,6 +905,7 @@ fn edit_class(msg: &RequestMsg) -> EditClass {
         M::UrlEdited(action) if url_action_edits_content(action) => EditClass::Coalesce(K::Url),
         M::HeaderKeyChanged(i, _) => EditClass::Coalesce(K::HeaderKey(*i)),
         M::HeaderValueChanged(i, _) => EditClass::Coalesce(K::HeaderValue(*i)),
+        M::HeaderDescriptionChanged(i, _) => EditClass::Coalesce(K::HeaderDescription(*i)),
         M::ParamKeyChanged(i, _) => EditClass::Coalesce(K::ParamKey(*i)),
         M::ParamValueChanged(i, _) => EditClass::Coalesce(K::ParamValue(*i)),
         M::HeadersBulkEdited(_) => EditClass::Coalesce(K::HeadersBulk),
@@ -975,6 +999,7 @@ fn parse_bulk_kv(text: &str, allow_eq: bool) -> Vec<crate::domain::request::KeyV
                 key,
                 value,
                 enabled,
+                description: String::new(),
             })
         })
         .collect()
@@ -1344,6 +1369,7 @@ pub(super) fn apply_parsed_command(
             key: k,
             value: v,
             enabled: true,
+            description: String::new(),
         })
         .collect();
     if has_headers {
@@ -1441,6 +1467,80 @@ fn guess_mime(name: &str) -> Option<String> {
         _ => return None,
     };
     Some(m.to_owned())
+}
+
+/// Typing in a Headers cell keeps its list open on that cell, back at the
+/// first (best) match since the filter changed.
+fn open_suggest(tab: &mut RequestTabState, row: usize, field: crate::state::tabs::SuggestField) {
+    tab.header_suggest = Some(crate::state::tabs::HeaderSuggest {
+        row,
+        field,
+        selected: 0,
+    });
+}
+
+fn handle_header_suggest(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
+    use crate::state::tabs::SuggestField;
+    match msg {
+        RequestMsg::HeaderSuggestOpened(row, field) => {
+            let tab = state.tabs.active_tab_mut();
+            if row < tab.headers.len()
+                && tab.header_suggest.map(|s| (s.row, s.field)) != Some((row, field))
+            {
+                open_suggest(tab, row, field);
+            }
+        }
+        RequestMsg::HeaderSuggestClosed => {
+            state.tabs.active_tab_mut().header_suggest = None;
+        }
+        RequestMsg::HeaderSuggestMoved(down) => {
+            let n = state
+                .tabs
+                .active_tab()
+                .header_suggestions(state.active_env())
+                .len();
+            if let Some(s) = state.tabs.active_tab_mut().header_suggest.as_mut()
+                && n > 0
+            {
+                s.selected = if down {
+                    (s.selected + 1) % n
+                } else {
+                    (s.selected + n - 1) % n
+                };
+            }
+        }
+        RequestMsg::HeaderSuggestAccepted => {
+            let tab = state.tabs.active_tab();
+            let Some(s) = tab.header_suggest else {
+                return Task::none();
+            };
+            let list = tab.header_suggestions(state.active_env());
+            let Some(pick) = list.get(s.selected.min(list.len().saturating_sub(1))) else {
+                state.tabs.active_tab_mut().header_suggest = None;
+                return Task::none();
+            };
+            let value = pick.apply.clone();
+            return handle_header_suggest(
+                state,
+                RequestMsg::HeaderSuggestionPicked(s.row, s.field, value),
+            );
+        }
+        RequestMsg::HeaderSuggestionPicked(row, field, value) => {
+            if row >= state.tabs.active_tab().headers.len() {
+                return Task::none();
+            }
+            // Through the normal edit path so undo and drafts see it.
+            let edit = match field {
+                SuggestField::Key => RequestMsg::HeaderKeyChanged(row, value),
+                SuggestField::Value => RequestMsg::HeaderValueChanged(row, value),
+            };
+            let task = handle(state, edit);
+            state.tabs.active_tab_mut().header_suggest = None;
+            return task;
+        }
+        _ => {}
+    }
+    Task::none()
 }
 
 fn handle_url_variables(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
@@ -1650,4 +1750,53 @@ fn save_url_variable(state: &mut AppState) -> Result<(), String> {
     state.tabs.active_tab_mut().url_variable_draft = None;
     state.status_message = Some("Variable saved to environment".into());
     Ok(())
+}
+
+#[cfg(test)]
+mod header_suggest_tests {
+    use super::*;
+    use crate::state::tabs::SuggestField;
+
+    #[test]
+    fn typing_arrows_and_enter_fill_the_cell() {
+        let dir = std::env::temp_dir().join(format!("rustman-suggest-{}", uuid::Uuid::new_v4()));
+        let (mut state, _) = crate::app::boot::init_at(dir.clone());
+        let _ = handle(&mut state, RequestMsg::HeaderAdded);
+        let _ = handle(&mut state, RequestMsg::HeaderKeyChanged(0, "con".into()));
+        let tab = state.tabs.active_tab();
+        assert_eq!(tab.header_suggest.map(|s| s.field), Some(SuggestField::Key));
+        let list = tab.header_suggestions(None);
+        assert_eq!(list[0].label, "Connection");
+
+        let _ = handle(&mut state, RequestMsg::HeaderSuggestMoved(true));
+        let _ = handle(&mut state, RequestMsg::HeaderSuggestAccepted);
+        let tab = state.tabs.active_tab();
+        assert_eq!(tab.headers[0].key, list[1].apply);
+        assert!(tab.header_suggest.is_none(), "picking closes the list");
+
+        // Value column: `{` lists dynamic variables; a pick replaces the token.
+        let _ = handle(&mut state, RequestMsg::HeaderValueChanged(0, "id-{".into()));
+        let pick = state
+            .tabs
+            .active_tab()
+            .header_suggestions(None)
+            .into_iter()
+            .find(|s| s.label == "$guid")
+            .expect("dynamic variables offered");
+        let _ = handle(
+            &mut state,
+            RequestMsg::HeaderSuggestionPicked(0, SuggestField::Value, pick.apply),
+        );
+        assert_eq!(state.tabs.active_tab().headers[0].value, "id-{{$guid}}");
+
+        // A removed row cannot be filled by a stale pick.
+        let _ = handle(&mut state, RequestMsg::HeaderRemoved(0));
+        let _ = handle(
+            &mut state,
+            RequestMsg::HeaderSuggestionPicked(0, SuggestField::Key, "Accept".into()),
+        );
+        assert!(state.tabs.active_tab().headers.is_empty());
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

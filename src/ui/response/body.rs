@@ -391,9 +391,11 @@ fn html_preview_view(
     container(
         column![
             row![
-                text("Rendered preview. Open in browser for the full page with scripts and styles.")
-                    .size(TEXT_XS)
-                    .color(Palette::text_subtle()),
+                text(
+                    "Rendered preview. Open in browser for the full page with scripts and styles."
+                )
+                .size(TEXT_XS)
+                .color(Palette::text_subtle()),
                 Space::new().width(Length::Fill),
                 open_action,
                 save_action,
@@ -500,7 +502,11 @@ fn json_table<'a>(
 ) -> Element<'a, Message> {
     let entries: Vec<(String, &serde_json::Value)> = match value {
         serde_json::Value::Object(m) => m.iter().map(|(k, v)| (k.clone(), v)).collect(),
-        serde_json::Value::Array(a) => a.iter().enumerate().map(|(i, v)| (i.to_string(), v)).collect(),
+        serde_json::Value::Array(a) => a
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (i.to_string(), v))
+            .collect(),
         _ => Vec::new(),
     };
     // One key column width per table, like Postman: sized to the longest
@@ -542,7 +548,9 @@ fn json_table<'a>(
                 head = head.push(badge_chip(b));
             }
             let head = button(container(head).padding([6, 8]).width(Length::Fill))
-                .on_press(Message::Response(ResponseMsg::JsonNodeToggled(child.clone())))
+                .on_press(Message::Response(ResponseMsg::JsonNodeToggled(
+                    child.clone(),
+                )))
                 .padding(0)
                 .width(Length::Fill)
                 .style(|_, status| iced::widget::button::Style {
@@ -1001,7 +1009,10 @@ mod preview_tests {
     #[test]
     fn json_badges_and_scalars_match_postman() {
         assert_eq!(json_badge(&serde_json::json!({})).as_deref(), Some("{}"));
-        assert_eq!(json_badge(&serde_json::json!({"a": 1, "b": 2})).as_deref(), Some("{2}"));
+        assert_eq!(
+            json_badge(&serde_json::json!({"a": 1, "b": 2})).as_deref(),
+            Some("{2}")
+        );
         assert_eq!(json_badge(&serde_json::json!([1])).as_deref(), Some("[1]"));
         assert_eq!(json_scalar(&serde_json::json!("POST")), "POST");
         assert_eq!(json_scalar(&serde_json::Value::Null), "null");

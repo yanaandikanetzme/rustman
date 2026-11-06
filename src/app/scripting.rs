@@ -313,6 +313,7 @@ mod tests {
             key: key.into(),
             value: value.into(),
             enabled,
+            description: String::new(),
         }
     }
 

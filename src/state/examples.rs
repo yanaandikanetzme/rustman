@@ -36,6 +36,7 @@ impl ExampleEditor {
                 key: key.clone(),
                 value: value.clone(),
                 enabled: true,
+                description: String::new(),
             })
             .collect();
         response_headers.sort_by(|a, b| a.key.cmp(&b.key));

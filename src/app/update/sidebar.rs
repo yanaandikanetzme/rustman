@@ -1433,6 +1433,7 @@ mod clone_name_tests {
             key: "Accept".into(),
             value: "application/json".into(),
             enabled: true,
+            description: String::new(),
         });
         original.body = "{\"a\":1}".into();
 

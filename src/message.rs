@@ -184,8 +184,19 @@ pub enum RequestMsg {
     HeaderToggled(usize),
     HeaderKeyChanged(usize, String),
     HeaderValueChanged(usize, String),
+    HeaderDescriptionChanged(usize, String),
     HeaderAdded,
     HeaderRemoved(usize),
+    /// A Headers cell was clicked: open its autocomplete list.
+    HeaderSuggestOpened(usize, crate::state::tabs::SuggestField),
+    /// Escape or a click elsewhere closed the list.
+    HeaderSuggestClosed,
+    /// Arrow keys in the open list (`true` = down).
+    HeaderSuggestMoved(bool),
+    /// Enter in the open list: apply the highlighted suggestion.
+    HeaderSuggestAccepted,
+    /// A suggestion was clicked: the cell's new content.
+    HeaderSuggestionPicked(usize, crate::state::tabs::SuggestField, String),
     HeadersBulkToggle,
     HeadersBulkEdited(iced::widget::text_editor::Action),
     /// Set (or with "None" remove) the Content-Type header from the

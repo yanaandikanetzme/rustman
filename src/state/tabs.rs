@@ -120,6 +120,21 @@ impl std::fmt::Display for BodyLang {
     }
 }
 
+/// Which column of a Headers row an autocomplete list belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SuggestField {
+    Key,
+    Value,
+}
+
+/// The Headers cell whose autocomplete list is open, and its highlighted row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeaderSuggest {
+    pub row: usize,
+    pub field: SuggestField,
+    pub selected: usize,
+}
+
 #[derive(Default)]
 pub enum ResponsePreview {
     #[default]
@@ -160,6 +175,8 @@ pub struct RequestTabState {
     pub url_variable_draft: Option<UrlVariableDraft>,
     pub url_completion_open: bool,
     pub url_completion_selected: usize,
+    /// Open autocomplete list of a Headers cell (Postman-style).
+    pub header_suggest: Option<HeaderSuggest>,
     pub headers: Vec<KeyValue>,
     pub params: Vec<KeyValue>,
     pub body_type: BodyType,
@@ -261,6 +278,7 @@ pub enum EditKind {
     Url,
     HeaderKey(usize),
     HeaderValue(usize),
+    HeaderDescription(usize),
     ParamKey(usize),
     ParamValue(usize),
     HeadersBulk,
@@ -309,6 +327,7 @@ impl RequestTabState {
             url_variable_draft: None,
             url_completion_open: false,
             url_completion_selected: 0,
+            header_suggest: None,
             headers: Vec::new(),
             params: Vec::new(),
             body_type: BodyType::None,
@@ -498,6 +517,41 @@ impl RequestTabState {
             return self.body_preview.unwrap_or(true);
         }
         self.json_previewable() && self.body_preview.unwrap_or(false)
+    }
+
+    /// Suggestions for the Headers cell whose list is open. Empty when the
+    /// cell is gone (row removed) or too large to edit inline.
+    pub fn header_suggestions(
+        &self,
+        env: Option<&crate::domain::environment::AppEnvironment>,
+    ) -> Vec<crate::services::header_suggest::Suggestion> {
+        use crate::services::header_suggest as hs;
+        let Some(s) = self.header_suggest else {
+            return Vec::new();
+        };
+        let Some(h) = self.headers.get(s.row) else {
+            return Vec::new();
+        };
+        let text = match s.field {
+            SuggestField::Key => &h.key,
+            SuggestField::Value => &h.value,
+        };
+        if !crate::ui::request::cell::is_inline(text) {
+            return Vec::new();
+        }
+        match s.field {
+            SuggestField::Key => {
+                let used: Vec<&str> = self
+                    .headers
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != s.row)
+                    .map(|(_, h)| h.key.as_str())
+                    .collect();
+                hs::for_key(&h.key, &used, env)
+            }
+            SuggestField::Value => hs::for_value(&h.key, &h.value, env),
+        }
     }
 
     /// Whether the toolbar offers Preview for the current response.

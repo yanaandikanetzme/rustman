@@ -384,6 +384,7 @@ mod tests {
                 key: "Authorization".into(),
                 value: "Bearer {{api_token}}".into(),
                 enabled: true,
+                description: String::new(),
             });
         refresh(&mut state);
         assert!(

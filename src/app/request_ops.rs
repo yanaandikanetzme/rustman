@@ -119,6 +119,7 @@ pub(crate) fn send_request(state: &mut AppState) -> Task<Message> {
             key,
             value,
             enabled: true,
+            description: String::new(),
         });
     }
 

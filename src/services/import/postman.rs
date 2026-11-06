@@ -88,6 +88,8 @@ struct PostmanHeader {
     value: String,
     #[serde(default)]
     disabled: bool,
+    #[serde(default)]
+    description: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -432,6 +434,7 @@ fn convert_request(collection_id: &str, item: &PostmanRequestItem) -> SavedReque
                     key: p.key.clone(),
                     value: p.value.clone().unwrap_or_default(),
                     enabled: !p.disabled,
+                    description: String::new(),
                 })
                 .collect();
             // The query is kept in `params`; strip it from the URL so it isn't
@@ -455,6 +458,7 @@ fn convert_request(collection_id: &str, item: &PostmanRequestItem) -> SavedReque
             key: h.key.clone(),
             value: h.value.clone(),
             enabled: !h.disabled,
+            description: description_text(h.description.as_ref()),
         })
         .collect();
 
@@ -610,7 +614,13 @@ fn export_request(req: &SavedRequest) -> serde_json::Value {
     let headers: Vec<Value> = req
         .headers
         .iter()
-        .map(|h| json!({ "key": h.key, "value": h.value, "disabled": !h.enabled }))
+        .map(|h| {
+            let mut v = json!({ "key": h.key, "value": h.value, "disabled": !h.enabled });
+            if !h.description.is_empty() {
+                v["description"] = json!(h.description);
+            }
+            v
+        })
         .collect();
 
     let body: Value = match req.body_type {

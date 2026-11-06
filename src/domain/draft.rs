@@ -415,6 +415,7 @@ mod tests {
             key: k.into(),
             value: "1".into(),
             enabled: true,
+            description: String::new(),
         };
         let d = draft_with(|r| r.headers = vec![kv("X-Mine")]);
         let d = d.rebase(&upstream(|r| r.headers = vec![kv("X-Theirs")]));

@@ -12,6 +12,41 @@ pub struct Popup<'a, Message, Theme, Renderer> {
     /// Messages for which the menu stays open (typing in a search box
     /// inside it). `None`: any message closes the menu first.
     keep_open: Option<fn(&Message) -> bool>,
+    /// An outside click closes the menu but still reaches the widget under
+    /// it (autocomplete: clicking another cell focuses it).
+    pass_outside: bool,
+    /// Up / Down / Enter while open (autocomplete keyboard navigation).
+    nav: Option<SuggestNav<Message>>,
+}
+
+/// Messages for an autocomplete list's keyboard navigation.
+#[derive(Clone)]
+pub struct SuggestNav<Message> {
+    pub up: Message,
+    pub down: Message,
+    pub enter: Message,
+}
+
+/// Autocomplete list under an input. Always wrap the input (pass `open`)
+/// so the widget tree, and with it the input's focus, stays stable while
+/// the list appears and disappears during typing.
+pub fn popup_suggest<'a, Message: Clone + 'a, Theme: 'a, Renderer: renderer::Renderer + 'a>(
+    content: Element<'a, Message, Theme, Renderer>,
+    menu: Element<'a, Message, Theme, Renderer>,
+    close: Message,
+    open: bool,
+    nav: SuggestNav<Message>,
+) -> Element<'a, Message, Theme, Renderer> {
+    Element::new(Popup {
+        content,
+        menu,
+        close,
+        align_left: true,
+        open,
+        keep_open: None,
+        pass_outside: true,
+        nav: Some(nav),
+    })
 }
 
 pub fn popup<'a, Message: Clone + 'a, Theme: 'a, Renderer: renderer::Renderer + 'a>(
@@ -26,6 +61,8 @@ pub fn popup<'a, Message: Clone + 'a, Theme: 'a, Renderer: renderer::Renderer + 
         align_left: false,
         open: true,
         keep_open: None,
+        pass_outside: false,
+        nav: None,
     })
 }
 
@@ -43,6 +80,8 @@ pub fn popup_left<'a, Message: Clone + 'a, Theme: 'a, Renderer: renderer::Render
         align_left: true,
         open,
         keep_open: None,
+        pass_outside: false,
+        nav: None,
     })
 }
 
@@ -63,6 +102,8 @@ pub fn popup_sticky<'a, Message: Clone + 'a, Theme: 'a, Renderer: renderer::Rend
         align_left,
         open: true,
         keep_open: Some(keep_open),
+        pass_outside: false,
+        nav: None,
     })
 }
 
@@ -196,6 +237,8 @@ where
             close: self.close.clone(),
             align_left: self.align_left,
             keep_open: self.keep_open,
+            pass_outside: self.pass_outside,
+            nav: self.nav.clone(),
         })))
     }
 }
@@ -207,6 +250,8 @@ struct MenuOverlay<'a, 'b, Message, Theme, Renderer> {
     close: Message,
     align_left: bool,
     keep_open: Option<fn(&Message) -> bool>,
+    pass_outside: bool,
+    nav: Option<SuggestNav<Message>>,
 }
 
 fn menu_position(anchor: Rectangle, size: Size, bounds: Size) -> iced::Point {
@@ -279,10 +324,35 @@ impl<Message: Clone, Theme, Renderer: renderer::Renderer> overlay::Overlay<Messa
         let outside_press = matches!(event, Event::Mouse(mouse::Event::ButtonPressed(_)))
             && !cursor.is_over(layout.bounds())
             && !cursor.is_over(self.anchor);
+        if outside_press && self.pass_outside {
+            shell.publish(self.close.clone());
+            return;
+        }
         if escape || outside_press {
             shell.publish(self.close.clone());
             shell.capture_event();
             return;
+        }
+        if let (
+            Some(nav),
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(named),
+                ..
+            }),
+        ) = (&self.nav, event)
+        {
+            use keyboard::key::Named;
+            let msg = match named {
+                Named::ArrowUp => Some(nav.up.clone()),
+                Named::ArrowDown => Some(nav.down.clone()),
+                Named::Enter => Some(nav.enter.clone()),
+                _ => None,
+            };
+            if let Some(msg) = msg {
+                shell.publish(msg);
+                shell.capture_event();
+                return;
+            }
         }
         let mut actions = Vec::new();
         let mut menu_shell = Shell::new(&mut actions);
@@ -405,6 +475,8 @@ mod tests {
             close: true,
             align_left: false,
             keep_open: None,
+            pass_outside: false,
+            nav: None,
         };
         let node = overlay.layout(&(), Size::new(400.0, 800.0));
         let event = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
@@ -441,6 +513,8 @@ mod tests {
             close: true,
             align_left: true,
             keep_open: None,
+            pass_outside: false,
+            nav: None,
         };
         let node = overlay.layout(&(), Size::new(1280.0, 800.0));
         assert_eq!(node.bounds().x, 60.0);
@@ -474,6 +548,8 @@ mod tests {
             close: "close",
             align_left: false,
             keep_open: None,
+            pass_outside: false,
+            nav: None,
         };
         let node = overlay.layout(&(), Size::new(400.0, 800.0));
         let mut messages = Vec::new();
@@ -510,6 +586,8 @@ mod tests {
                 close: "close",
                 align_left: true,
                 keep_open: Some(|m: &&str| *m == "type"),
+                pass_outside: false,
+                nav: None,
             };
             let node = overlay.layout(&(), Size::new(400.0, 800.0));
             let mut messages = Vec::new();

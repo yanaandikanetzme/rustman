@@ -181,7 +181,10 @@ fn class_kind(raw: &str) -> Option<DumpKind> {
     let value = &raw[i + "class=".len()..];
     let value = match value.chars().next() {
         Some(q @ ('"' | '\'')) => value[1..].split(q).next().unwrap_or(""),
-        _ => value.split(|c: char| c.is_whitespace()).next().unwrap_or(""),
+        _ => value
+            .split(|c: char| c.is_whitespace())
+            .next()
+            .unwrap_or(""),
     };
     value.split_whitespace().find_map(DumpKind::from_class)
 }

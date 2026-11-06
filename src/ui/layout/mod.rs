@@ -279,6 +279,7 @@ fn main_area(state: &AppState) -> Element<'_, Message> {
         RequestTab::Params => request::params::view(active_tab, active_env),
         RequestTab::Headers => request::headers::view(
             active_tab,
+            active_env,
             state.show_auto_headers,
             state.sidebar.context_menu.as_deref(),
         ),

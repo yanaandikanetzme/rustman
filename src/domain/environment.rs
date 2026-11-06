@@ -10,10 +10,14 @@ pub struct AppEnvironment {
     pub is_active: bool,
 }
 
+/// Replaces `{{name}}` with the active environment's value. Dynamic
+/// variables (`{{$guid}}`, `{{$timestamp}}`, …) resolve to a fresh value
+/// even without an environment; an environment variable of the same name
+/// wins, like Postman.
 pub fn substitute(text: &str, env: Option<&AppEnvironment>) -> String {
-    let Some(env) = env else {
+    if !text.contains("{{") {
         return text.to_owned();
-    };
+    }
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(start) = rest.find("{{") {
@@ -22,8 +26,11 @@ pub fn substitute(text: &str, env: Option<&AppEnvironment>) -> String {
         match after.find("}}") {
             Some(end) => {
                 let key = after[..end].trim();
-                match env.variables.get(key) {
-                    Some(value) => out.push_str(value),
+                let value = env
+                    .and_then(|env| env.variables.get(key).cloned())
+                    .or_else(|| crate::services::header_suggest::dynamic_value(key));
+                match value {
+                    Some(value) => out.push_str(&value),
                     None => out.push_str(&rest[start..start + end + 4]),
                 }
                 rest = &after[end + 2..];
@@ -79,6 +86,17 @@ mod tests {
     #[test]
     fn no_env_returns_input() {
         assert_eq!(substitute("{{a}}", None), "{{a}}");
+    }
+
+    #[test]
+    fn dynamic_variables_resolve_without_an_environment() {
+        let id = substitute("id={{$guid}}", None);
+        assert_eq!(id.len(), "id=".len() + 36);
+        assert_ne!(substitute("{{$guid}}", None), substitute("{{$guid}}", None));
+        // An environment variable named like a dynamic one wins.
+        let e = env(&[("$guid", "fixed")]);
+        assert_eq!(substitute("{{$guid}}", Some(&e)), "fixed");
+        assert_eq!(substitute("{{$unknown}}", None), "{{$unknown}}");
     }
 
     #[test]

@@ -53,6 +53,7 @@ pub fn import(json: &str) -> Result<Vec<ImportedCollection>, String> {
                     key: clean_key.to_owned(),
                     value,
                     enabled: !disabled,
+                    description: String::new(),
                 });
             }
         }
