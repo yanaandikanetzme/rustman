@@ -175,6 +175,12 @@ pub(super) fn handle(state: &mut AppState, msg: ResponseMsg) -> Task<Message> {
             tab.body_preview = Some(false);
             tab.set_body_lang(lang);
         }
+        ResponseMsg::RevealToggled(key) => {
+            let shown = &mut state.tabs.active_tab_mut().revealed_response;
+            if !shown.remove(&key) {
+                shown.insert(key);
+            }
+        }
         ResponseMsg::ClearResponse => {
             state.sidebar.context_menu = None;
             state.tabs.active_tab_mut().clear_response();

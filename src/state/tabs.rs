@@ -395,6 +395,9 @@ pub struct RequestTabState {
     /// Paths of the expanded rows in the JSON preview table. Cleared on
     /// every new response.
     pub json_open: std::collections::HashSet<String>,
+    /// Masked response Headers/Cookies values shown for now; a new
+    /// response hides them again.
+    pub revealed_response: std::collections::HashSet<String>,
     /// Currently shown page into `viewer_page_starts`.
     pub viewer_page: usize,
     pub viewer_full_is_json: bool,
@@ -538,6 +541,7 @@ impl RequestTabState {
             html_fallback_text: None,
             html_blocks: Vec::new(),
             json_open: std::collections::HashSet::new(),
+            revealed_response: std::collections::HashSet::new(),
             viewer_page: 0,
             viewer_full_is_json: false,
             body_lang: None,
@@ -732,6 +736,7 @@ impl RequestTabState {
         self.response = None;
         self.parsed_json = None;
         self.json_open.clear();
+        self.revealed_response.clear();
         self.body_lang = None;
         self.body_preview = None;
         self.response_preview = ResponsePreview::None;

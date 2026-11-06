@@ -307,6 +307,7 @@ pub(crate) fn marks_session_dirty(message: &Message) -> bool {
                 | crate::message::ResponseMsg::BodyLangSelected(_)
                 | crate::message::ResponseMsg::PreviewToggled
                 | crate::message::ResponseMsg::ClearResponse
+                | crate::message::ResponseMsg::RevealToggled(_)
         )
     )
 }

@@ -64,6 +64,7 @@ pub(super) fn handle(state: &mut AppState, msg: AppMsg) -> Task<Message> {
                 tab.is_loading = false;
                 tab.parsed_json = None;
                 tab.json_open.clear();
+                tab.revealed_response.clear();
                 tab.body_lang = None;
                 tab.body_preview = None;
                 tab.viewer_processing = true;

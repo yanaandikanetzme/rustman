@@ -416,6 +416,8 @@ pub enum ResponseMsg {
     PreviewToggled,
     /// Expand or collapse a row of the JSON preview table (row path).
     JsonNodeToggled(String),
+    /// Show or hide one masked Headers/Cookies value (`h:3`, `c:0`).
+    RevealToggled(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
