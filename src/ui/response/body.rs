@@ -23,6 +23,18 @@ pub const FORMAT_MENU: &str = "response:format";
 /// under a divider.
 /// `active` is false while Preview is on: the chip then looks unselected, so
 /// only one of the two reads as the current view (Postman's behaviour).
+/// Like Postman: from Preview the chip first returns to the source; the
+/// dropdown opens only once the source is showing.
+fn format_chip_press(active: bool) -> Message {
+    if active {
+        Message::Sidebar(crate::message::SidebarMsg::ContextMenuOpened(
+            FORMAT_MENU.to_owned(),
+        ))
+    } else {
+        Message::Response(ResponseMsg::PreviewToggled)
+    }
+}
+
 fn format_menu(current: BodyLang, open: bool, active: bool) -> Element<'static, Message> {
     let fg = if active {
         Palette::text()
@@ -53,9 +65,7 @@ fn format_menu(current: BodyLang, open: bool, active: bool) -> Element<'static, 
         .height(26)
         .center_y(26),
     )
-    .on_press(Message::Sidebar(
-        crate::message::SidebarMsg::ContextMenuOpened(FORMAT_MENU.to_owned()),
-    ))
+    .on_press(format_chip_press(active))
     .padding([0, 10])
     .style(move |_, status| iced::widget::button::Style {
         background: if open || matches!(status, iced::widget::button::Status::Hovered) {
@@ -1024,5 +1034,22 @@ mod preview_tests {
         assert_eq!(json_scalar(&serde_json::json!("POST")), "POST");
         assert_eq!(json_scalar(&serde_json::Value::Null), "null");
         assert!(json_scalar(&serde_json::json!("x".repeat(5_000))).ends_with('…'));
+    }
+}
+
+#[cfg(test)]
+mod format_chip_tests {
+    use super::*;
+
+    #[test]
+    fn chip_leaves_preview_first_and_opens_the_menu_after() {
+        assert!(matches!(
+            format_chip_press(false),
+            Message::Response(ResponseMsg::PreviewToggled)
+        ));
+        assert!(matches!(
+            format_chip_press(true),
+            Message::Sidebar(crate::message::SidebarMsg::ContextMenuOpened(_))
+        ));
     }
 }
