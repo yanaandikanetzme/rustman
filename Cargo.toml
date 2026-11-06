@@ -73,7 +73,7 @@ sha2 = "0.11"
 hmac = "0.13"
 
 # LRU cache for parsed response bodies
-lru = "0.18"
+lru = "0.19"
 
 # In-app self-update (feature `self-update`, on by default): reuses the
 # existing (ring-based) reqwest to fetch a release asset, then extracts +
