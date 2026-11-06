@@ -403,7 +403,7 @@ fn header_table<'a>(
 
 /// A Key/Value cell with its autocomplete list. Always wrapped (open or
 /// not) so the input keeps focus while the list comes and goes.
-fn suggest_cell<'a>(
+pub(crate) fn suggest_cell<'a>(
     cell: Element<'a, Message>,
     row: usize,
     field: SuggestField,

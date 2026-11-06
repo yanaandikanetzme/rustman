@@ -220,7 +220,7 @@ fn rank(label: &str, query: &str) -> Option<u8> {
 }
 
 /// Variables matching the query typed after `{`, replacing the token.
-fn variables(text: &str, env: Option<&AppEnvironment>) -> Option<Vec<Suggestion>> {
+pub fn variables(text: &str, env: Option<&AppEnvironment>) -> Option<Vec<Suggestion>> {
     let (start, query) = variable_trigger(text)?;
     Some(variable_list(query, env, &text[..start]))
 }

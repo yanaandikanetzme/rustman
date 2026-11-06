@@ -50,6 +50,9 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
         RequestMsg::HeaderKeyChanged(..)
             | RequestMsg::HeaderValueChanged(..)
             | RequestMsg::HeaderRemoved(_)
+            | RequestMsg::ParamKeyChanged(..)
+            | RequestMsg::ParamValueChanged(..)
+            | RequestMsg::ParamRemoved(_)
             | RequestMsg::TabSelected(_)
     ) {
         state.tabs.active_tab_mut().var_card = None;
@@ -500,12 +503,14 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
             let url = sync_url_from_params(&tab.url, &tab.params);
             tab.set_url(url);
             tab.modified = true;
+            open_suggest(tab, i, crate::state::tabs::SuggestField::ParamKey);
         }
         RequestMsg::ParamValueChanged(i, v) => {
             tab.params[i].value = v;
             let url = sync_url_from_params(&tab.url, &tab.params);
             tab.set_url(url);
             tab.modified = true;
+            open_suggest(tab, i, crate::state::tabs::SuggestField::ParamValue);
         }
         RequestMsg::HeadersBulkToggle => {
             if let Some(content) = tab.headers_bulk.take() {
@@ -1657,10 +1662,11 @@ fn header_cell(
     field: crate::state::tabs::SuggestField,
 ) -> Option<&str> {
     use crate::state::tabs::SuggestField;
-    let header = tab.headers.get(row)?;
     Some(match field {
-        SuggestField::Key => &header.key,
-        SuggestField::Value => &header.value,
+        SuggestField::Key => &tab.headers.get(row)?.key,
+        SuggestField::Value => &tab.headers.get(row)?.value,
+        SuggestField::ParamKey => &tab.params.get(row)?.key,
+        SuggestField::ParamValue => &tab.params.get(row)?.value,
     })
 }
 
@@ -1982,7 +1988,7 @@ fn handle_header_suggest(state: &mut AppState, msg: RequestMsg) -> Task<Message>
                 }
             } else {
                 tab.var_card = None;
-                if row < tab.headers.len()
+                if header_cell(tab, row, field).is_some()
                     && tab.header_suggest.map(|s| (s.row, s.field)) != Some((row, field))
                 {
                     open_suggest(tab, row, field);
@@ -2025,13 +2031,15 @@ fn handle_header_suggest(state: &mut AppState, msg: RequestMsg) -> Task<Message>
             );
         }
         RequestMsg::HeaderSuggestionPicked(row, field, value) => {
-            if row >= state.tabs.active_tab().headers.len() {
+            if header_cell(state.tabs.active_tab(), row, field).is_none() {
                 return Task::none();
             }
             // Through the normal edit path so undo and drafts see it.
             let edit = match field {
                 SuggestField::Key => RequestMsg::HeaderKeyChanged(row, value),
                 SuggestField::Value => RequestMsg::HeaderValueChanged(row, value),
+                SuggestField::ParamKey => RequestMsg::ParamKeyChanged(row, value),
+                SuggestField::ParamValue => RequestMsg::ParamValueChanged(row, value),
             };
             let task = handle(state, edit);
             state.tabs.active_tab_mut().header_suggest = None;
@@ -2255,6 +2263,47 @@ fn save_url_variable(state: &mut AppState) -> Result<(), String> {
 mod header_suggest_tests {
     use super::*;
     use crate::state::tabs::SuggestField;
+
+    #[test]
+    fn a_params_cell_lists_environment_variables_and_shows_their_card() {
+        let dir = std::env::temp_dir().join(format!("rustman-psuggest-{}", uuid::Uuid::new_v4()));
+        let (mut state, _) = crate::app::boot::init_at(dir.clone());
+        state
+            .environments
+            .iter_mut()
+            .for_each(|e| e.is_active = false);
+        state
+            .environments
+            .push(crate::domain::environment::AppEnvironment {
+                id: "e".into(),
+                name: "E".into(),
+                variables: [("id".to_owned(), "42".to_owned())].into(),
+                is_active: true,
+            });
+        let _ = handle(&mut state, RequestMsg::ParamAdded);
+        let _ = handle(&mut state, RequestMsg::ParamKeyChanged(0, "user".into()));
+        let _ = handle(&mut state, RequestMsg::ParamValueChanged(0, "{{".into()));
+        let list = state
+            .tabs
+            .active_tab()
+            .header_suggestions(state.active_env());
+        assert_eq!(list[0].label, "id");
+        let _ = handle(&mut state, RequestMsg::HeaderSuggestAccepted);
+        let tab = state.tabs.active_tab();
+        assert_eq!(tab.params[0].value, "{{id}}");
+        assert!(tab.url.ends_with("?user={{id}}"), "{}", tab.url);
+        assert!(tab.header_suggest.is_none());
+
+        let _ = handle(
+            &mut state,
+            RequestMsg::HeaderSuggestOpened(0, SuggestField::ParamValue),
+        );
+        let card = state.tabs.active_tab().var_card.clone().unwrap();
+        assert_eq!(card.names, ["id"]);
+        assert!(card.pinned && !card.mask_all);
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn typing_arrows_and_enter_fill_the_cell() {

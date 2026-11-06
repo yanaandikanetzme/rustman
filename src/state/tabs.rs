@@ -213,11 +213,14 @@ pub struct BodyCompletion {
     pub forward: usize,
 }
 
-/// Which column of a Headers row an autocomplete list belongs to.
+/// Which cell of the Headers or Params table an autocomplete list or a
+/// variable card belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SuggestField {
     Key,
     Value,
+    ParamKey,
+    ParamValue,
 }
 
 /// The Headers cell whose autocomplete list is open, and its highlighted row.
@@ -715,12 +718,23 @@ impl RequestTabState {
         let Some(s) = self.header_suggest else {
             return Vec::new();
         };
+        if matches!(s.field, SuggestField::ParamKey | SuggestField::ParamValue) {
+            let Some(p) = self.params.get(s.row) else {
+                return Vec::new();
+            };
+            let text = if s.field == SuggestField::ParamKey {
+                &p.key
+            } else {
+                &p.value
+            };
+            return hs::variables(text, env).unwrap_or_default();
+        }
         let Some(h) = self.headers.get(s.row) else {
             return Vec::new();
         };
         let text = match s.field {
             SuggestField::Key => &h.key,
-            SuggestField::Value => &h.value,
+            _ => &h.value,
         };
         if !crate::ui::request::cell::is_inline(text) {
             return Vec::new();
@@ -736,7 +750,7 @@ impl RequestTabState {
                     .collect();
                 hs::for_key(&h.key, &used, env)
             }
-            SuggestField::Value => hs::for_value(&h.key, &h.value, env),
+            _ => hs::for_value(&h.key, &h.value, env),
         }
     }
 
