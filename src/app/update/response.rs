@@ -179,6 +179,12 @@ pub(super) fn handle(state: &mut AppState, msg: ResponseMsg) -> Task<Message> {
             let tab = state.tabs.active_tab_mut();
             tab.body_preview = Some(!tab.body_preview_on());
         }
+        ResponseMsg::JsonNodeToggled(path) => {
+            let open = &mut state.tabs.active_tab_mut().json_open;
+            if !open.remove(&path) {
+                open.insert(path);
+            }
+        }
         ResponseMsg::ConsoleEdited(action) => {
             let tab = state.tabs.active_tab_mut();
             tab.console_editor.perform(action);

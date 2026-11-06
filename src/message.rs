@@ -335,8 +335,10 @@ pub enum ResponseMsg {
     ViewerWrapToggled,
     /// Body format picked in the response toolbar (JSON, XML, … Raw).
     BodyLangSelected(crate::state::tabs::BodyLang),
-    /// Preview (readable rendered HTML) on/off.
+    /// Preview (rendered HTML / JSON table) on/off.
     PreviewToggled,
+    /// Expand or collapse a row of the JSON preview table (row path).
+    JsonNodeToggled(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]

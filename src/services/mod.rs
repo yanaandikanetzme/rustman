@@ -1,6 +1,7 @@
 pub mod cache;
 pub mod curl;
 pub mod format;
+pub mod html_preview;
 pub mod github;
 pub mod http;
 pub mod import;

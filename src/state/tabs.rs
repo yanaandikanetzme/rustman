@@ -210,6 +210,12 @@ pub struct RequestTabState {
     /// Readable-text rendering of an HTML body (`None` for non-HTML).
     /// Set alongside the viewer content; cleared on every new response.
     pub html_fallback_text: Option<String>,
+    /// Preview blocks of an HTML body (coloured dump blocks + readable
+    /// text). Empty for non-HTML; refreshed with `html_fallback_text`.
+    pub html_blocks: Vec<crate::services::html_preview::Block>,
+    /// Paths of the expanded rows in the JSON preview table. Cleared on
+    /// every new response.
+    pub json_open: std::collections::HashSet<String>,
     /// Currently shown page into `viewer_page_starts`.
     pub viewer_page: usize,
     pub viewer_full_is_json: bool,
@@ -337,6 +343,8 @@ impl RequestTabState {
             viewer_full: String::new(),
             viewer_page_starts: Vec::new(),
             html_fallback_text: None,
+            html_blocks: Vec::new(),
+            json_open: std::collections::HashSet::new(),
             viewer_page: 0,
             viewer_full_is_json: false,
             body_lang: None,
@@ -483,9 +491,42 @@ impl RequestTabState {
         }
     }
 
-    /// Whether the readable HTML preview is shown instead of the source.
+    /// Whether Preview is shown instead of the source. HTML (e.g. a Laravel
+    /// `dd()` page) opens in Preview; JSON opens pretty-printed, like Postman.
     pub fn body_preview_on(&self) -> bool {
-        self.html_fallback_text.is_some() && self.body_preview.unwrap_or(true)
+        if self.html_fallback_text.is_some() {
+            return self.body_preview.unwrap_or(true);
+        }
+        self.json_previewable() && self.body_preview.unwrap_or(false)
+    }
+
+    /// Whether the toolbar offers Preview for the current response.
+    pub fn preview_available(&self) -> bool {
+        self.html_fallback_text.is_some() || self.json_previewable()
+    }
+
+    /// A JSON object or array body can be shown as Postman's key/value table.
+    pub fn json_previewable(&self) -> bool {
+        matches!(
+            &self.parsed_json,
+            Some(serde_json::Value::Object(m)) if !m.is_empty()
+        ) || matches!(
+            &self.parsed_json,
+            Some(serde_json::Value::Array(a)) if !a.is_empty()
+        )
+    }
+
+    /// Recompute the HTML preview (readable text + dump blocks) from the
+    /// current response. Called whenever the viewer content is refilled.
+    pub fn refresh_html_preview(&mut self) {
+        self.html_fallback_text = self
+            .response
+            .as_ref()
+            .and_then(crate::services::format::html_preview_text);
+        self.html_blocks = match (&self.html_fallback_text, &self.response) {
+            (Some(_), Some(resp)) => crate::services::html_preview::blocks(&resp.body),
+            _ => Vec::new(),
+        };
     }
 
     /// Re-fill the viewer for a toolbar format pick: `Raw` shows the body as
@@ -1420,6 +1461,17 @@ mod viewer_page_tests {
         assert!(html.body_preview_on());
         html.body_preview = Some(false);
         assert!(!html.body_preview_on());
+
+        // JSON offers Preview (Postman's table) but opens pretty-printed.
+        assert!(tab.preview_available());
+        assert!(!tab.body_preview_on());
+        tab.body_preview = Some(true);
+        assert!(tab.body_preview_on());
+        // Scalars and empty containers have no table to show.
+        tab.parsed_json = Some(serde_json::json!({}));
+        assert!(!tab.preview_available());
+        tab.parsed_json = Some(serde_json::json!(5));
+        assert!(!tab.body_preview_on());
     }
 
     #[test]

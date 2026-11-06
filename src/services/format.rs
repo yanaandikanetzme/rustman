@@ -308,7 +308,7 @@ fn skip_until(chars: &mut std::iter::Peekable<std::str::Chars>, pat: &str) {
 
 /// Decode one `&...;` entity (caller already consumed `&`). An unterminated
 /// `&foo` (no `;`) is emitted literally, terminator included when present.
-fn push_entity(chars: &mut std::iter::Peekable<std::str::Chars>, out: &mut String) {
+pub(crate) fn push_entity(chars: &mut std::iter::Peekable<std::str::Chars>, out: &mut String) {
     let mut entity = String::new();
     let mut terminated = false;
     for c in chars.by_ref() {

@@ -129,12 +129,9 @@ pub fn view(tab: &RequestTabState, spinner_frame: u32, format_open: bool) -> Ele
         };
     }
 
-    // HTML (e.g. a Laravel `dd()` page) defaults to Preview: the readable
-    // text of the page. The format menu switches to the highlighted source.
-    let preview = tab
-        .html_fallback_text
-        .as_deref()
-        .filter(|_| tab.body_preview_on());
+    // HTML (e.g. a Laravel `dd()` page) defaults to Preview; JSON can switch
+    // to Postman's key/value table. The format menu returns to the source.
+    let preview_on = tab.body_preview_on();
 
     let page_count = tab.viewer_page_count();
     let size_note: Element<Message> = match tab.response_truncated_bytes {
@@ -195,26 +192,14 @@ pub fn view(tab: &RequestTabState, spinner_frame: u32, format_open: bool) -> Ele
     // Postman-style toolbar: body format menu (JSON, XML, HTML, …, Raw) and
     // Preview on the left; wrap, search and copy icons on the right.
     let format_menu = format_menu(tab.body_lang(), format_open);
-    let preview_btn: Element<Message> = if tab.html_fallback_text.is_some() {
-        mini::icon_button(
-            icons::eye(),
-            if preview.is_some() {
-                "Show source"
-            } else {
-                "Preview the page as readable text"
-            },
-            Some(Message::Response(ResponseMsg::PreviewToggled)),
-            preview.is_some(),
-        )
+    let preview_btn: Element<Message> = if tab.preview_available() {
+        preview_button(preview_on)
     } else {
         Space::new().width(0).into()
     };
     let wrap_on = tab.response_editor.wrap_enabled();
-    let lines_note: Element<Message> = if preview.is_some() {
-        text("Preview")
-            .size(10)
-            .color(Palette::text_subtle())
-            .into()
+    let lines_note: Element<Message> = if preview_on {
+        Space::new().width(0).into()
     } else {
         text(format!("{} lines", tab.response_viewer_lines))
             .size(10)
@@ -265,8 +250,10 @@ pub fn view(tab: &RequestTabState, spinner_frame: u32, format_open: bool) -> Ele
     })
     .width(Length::Fill);
 
-    let body: Element<Message> = if let Some(rendered) = preview {
-        simple_html_view(rendered, !resp.body_stored)
+    let body: Element<Message> = if preview_on && tab.html_fallback_text.is_some() {
+        html_preview_view(&tab.html_blocks, !resp.body_stored)
+    } else if let (true, Some(json)) = (preview_on, tab.parsed_json.as_ref()) {
+        json_preview_view(json, &tab.json_open)
     } else if tab.viewer_processing {
         container(text("Parsing…").size(TEXT_SM).color(Palette::text_subtle()))
             .padding([8, 12])
@@ -288,20 +275,123 @@ pub fn view(tab: &RequestTabState, spinner_frame: u32, format_open: bool) -> Ele
     panel.push(toolbar).push(body).into()
 }
 
-/// Readable-text HTML rendering. Borrows the pre-rendered fallback (computed
-/// once per response, not per frame). The raw source stays one Open or Save
-/// away, both of which need the complete body.
-fn simple_html_view<'a>(rendered: &'a str, full_body: bool) -> Element<'a, Message> {
+/// Postman's `▷ Preview` toggle: icon + label, filled while active.
+fn preview_button(on: bool) -> Element<'static, Message> {
+    let fg = if on {
+        Palette::text()
+    } else {
+        Palette::text_muted()
+    };
+    button(
+        container(
+            row![
+                icons::play().size(12).color(fg),
+                text("Preview")
+                    .size(12)
+                    .font(crate::ui::theme::UI_FONT_MEDIUM)
+                    .color(fg),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center),
+        )
+        .height(26)
+        .center_y(26),
+    )
+    .on_press(Message::Response(ResponseMsg::PreviewToggled))
+    .padding([0, 10])
+    .style(move |_, status| iced::widget::button::Style {
+        background: (on || matches!(status, iced::widget::button::Status::Hovered))
+            .then(|| Background::Color(Palette::surface_high())),
+        text_color: fg,
+        border: Border {
+            radius: 5.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .into()
+}
+
+/// VarDumper's dark theme (Laravel `dd()`), so dumps read as in a browser.
+const DUMP_BG: Color = Color::from_rgb8(0x18, 0x17, 0x1B);
+
+fn dump_color(kind: crate::services::html_preview::DumpKind) -> Color {
+    use crate::services::html_preview::DumpKind as K;
+    match kind {
+        K::Default | K::Ellipsis => Color::from_rgb8(0xFF, 0x84, 0x00),
+        K::Num | K::Const | K::Note | K::Index => Color::from_rgb8(0x12, 0x99, 0xDA),
+        K::Str | K::Key => Color::from_rgb8(0x56, 0xDB, 0x3A),
+        K::Ref => Color::from_rgb8(0xA0, 0xA0, 0xA0),
+        K::Member => Color::WHITE,
+        K::Meta => Color::from_rgb8(0xB7, 0x29, 0xD9),
+    }
+}
+
+/// HTML Preview: VarDumper blocks keep their colours and layout, other
+/// content shows as readable text. Blocks are parsed once per response.
+/// The real page stays one Open in browser / Save away (full body only).
+fn html_preview_view(
+    blocks: &[crate::services::html_preview::Block],
+    full_body: bool,
+) -> Element<'_, Message> {
+    use crate::services::html_preview::{Block, DumpKind};
+    use iced::widget::{rich_text, span};
+
     let (open_action, save_action): (Element<Message>, Element<Message>) = if full_body {
         (open_in_browser_button(), save_text_button())
     } else {
         (Space::new().width(0).into(), Space::new().width(0).into())
     };
 
+    let mut content = column![].spacing(8).padding(iced::padding::right(10));
+    for block in blocks {
+        content = content.push(match block {
+            Block::Dump(spans) => {
+                let spans: Vec<_> = spans
+                    .iter()
+                    .map(|(t, kind)| {
+                        let s = span(t.as_str()).color(dump_color(*kind));
+                        if matches!(kind, DumpKind::Str | DumpKind::Const) {
+                            s.font(iced::Font {
+                                weight: iced::font::Weight::Bold,
+                                ..MONO
+                            })
+                        } else {
+                            s
+                        }
+                    })
+                    .collect();
+                container(
+                    rich_text::<(), Message, iced::Theme, iced::Renderer>(spans)
+                        .size(12)
+                        .font(MONO)
+                        .line_height(iced::Pixels(18.0)),
+                )
+                .padding([6, 10])
+                .width(Length::Fill)
+                .style(|_| container::Style {
+                    background: Some(Background::Color(DUMP_BG)),
+                    border: Border {
+                        radius: 4.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })
+                .into()
+            }
+            Block::Text(t) => Element::from(
+                text(t.as_str())
+                    .size(TEXT_SM)
+                    .font(crate::ui::theme::UI_FONT)
+                    .color(Palette::text()),
+            ),
+        });
+    }
+
     container(
         column![
             row![
-                text("Page shown as readable text (dumps keep their layout). Open in browser for the full page.")
+                text("Rendered preview. Open in browser for the full page with scripts and styles.")
                     .size(TEXT_XS)
                     .color(Palette::text_subtle()),
                 Space::new().width(Length::Fill),
@@ -309,21 +399,204 @@ fn simple_html_view<'a>(rendered: &'a str, full_body: bool) -> Element<'a, Messa
                 save_action,
             ]
             .align_y(Alignment::Center),
-            scrollable(
-                text(rendered)
-                    .size(TEXT_SM)
-                    .font(crate::ui::theme::MONO)
-                    .color(Palette::text())
-            )
-            .height(Length::Fill),
+            scrollable(content)
+                .height(Length::Fill)
+                .style(crate::ui::theme::thin_scrollbar),
         ]
-        .spacing(4)
+        .spacing(6)
         .height(Length::Fill),
     )
-    .padding([8, 12])
+    .padding([8, 14])
     .width(Length::Fill)
     .height(Length::Fill)
     .into()
+}
+
+/// Rows the JSON preview renders before asking for the source view. Each
+/// row is a few widgets; thousands stay smooth, a 50k-item array would not.
+const JSON_ROW_BUDGET: usize = 2_000;
+
+/// Postman's JSON Preview: a key/value table; objects and arrays are rows
+/// with a `{n}` / `[n]` badge that expand into a nested table.
+fn json_preview_view<'a>(
+    value: &'a serde_json::Value,
+    open: &'a std::collections::HashSet<String>,
+) -> Element<'a, Message> {
+    let mut budget = JSON_ROW_BUDGET;
+    let mut col = column![json_table(value, "", open, &mut budget)].spacing(8);
+    if budget == 0 {
+        col = col.push(
+            text(format!(
+                "Preview shows the first {JSON_ROW_BUDGET} rows. Switch to JSON for the full body."
+            ))
+            .size(TEXT_XS)
+            .color(Palette::WARNING),
+        );
+    }
+    scrollable(container(col).padding(iced::Padding {
+        top: 4.0,
+        right: 16.0,
+        bottom: 12.0,
+        left: 14.0,
+    }))
+    .height(Length::Fill)
+    .width(Length::Fill)
+    .style(crate::ui::theme::thin_scrollbar)
+    .into()
+}
+
+/// Path segment of a child row: JSON-pointer escaped so keys holding `/`
+/// cannot collide with nested paths.
+pub(crate) fn json_child_path(parent: &str, key: &str) -> String {
+    format!("{parent}/{}", key.replace('~', "~0").replace('/', "~1"))
+}
+
+/// Inline text of a scalar; long strings are cut (the source view has them).
+fn json_scalar(v: &serde_json::Value) -> String {
+    const MAX: usize = 2_000;
+    let s = match v {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Null => "null".to_owned(),
+        other => other.to_string(),
+    };
+    if s.len() > MAX {
+        let mut cut = crate::services::format::head_capped(&s, MAX).to_owned();
+        cut.push('…');
+        cut
+    } else {
+        s
+    }
+}
+
+fn json_badge(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::Object(m) if m.is_empty() => Some("{}".into()),
+        serde_json::Value::Object(m) => Some(format!("{{{}}}", m.len())),
+        serde_json::Value::Array(a) if a.is_empty() => Some("[]".into()),
+        serde_json::Value::Array(a) => Some(format!("[{}]", a.len())),
+        _ => None,
+    }
+}
+
+fn badge_chip(label: String) -> Element<'static, Message> {
+    container(text(label).size(10).font(MONO).color(Palette::text_muted()))
+        .padding([1, 5])
+        .style(|_| container::Style {
+            background: Some(Background::Color(Palette::surface_high())),
+            border: Border {
+                radius: 3.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+fn json_table<'a>(
+    value: &'a serde_json::Value,
+    path: &str,
+    open: &'a std::collections::HashSet<String>,
+    budget: &mut usize,
+) -> Element<'a, Message> {
+    let entries: Vec<(String, &serde_json::Value)> = match value {
+        serde_json::Value::Object(m) => m.iter().map(|(k, v)| (k.clone(), v)).collect(),
+        serde_json::Value::Array(a) => a.iter().enumerate().map(|(i, v)| (i.to_string(), v)).collect(),
+        _ => Vec::new(),
+    };
+    // One key column width per table, like Postman: sized to the longest
+    // scalar key so values line up.
+    let longest = entries
+        .iter()
+        .filter(|(_, v)| !is_expandable(v))
+        .map(|(k, _)| k.chars().count())
+        .max()
+        .unwrap_or(4);
+    let key_w = (longest as f32 * 7.4 + 20.0).clamp(44.0, 240.0);
+    let key_font = iced::Font {
+        weight: iced::font::Weight::Semibold,
+        ..crate::ui::theme::UI_FONT
+    };
+
+    let mut rows: Vec<Element<'a, Message>> = Vec::new();
+    for (key, v) in entries {
+        if *budget == 0 {
+            break;
+        }
+        *budget -= 1;
+        if is_expandable(v) {
+            let child = json_child_path(path, &key);
+            let expanded = open.contains(&child);
+            let mut head = row![
+                (if expanded {
+                    icons::chevron_down()
+                } else {
+                    icons::chevron_right()
+                })
+                .size(12)
+                .color(Palette::text_muted()),
+                text(key).size(12).font(key_font).color(Palette::text()),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center);
+            if let Some(b) = json_badge(v) {
+                head = head.push(badge_chip(b));
+            }
+            let head = button(container(head).padding([6, 8]).width(Length::Fill))
+                .on_press(Message::Response(ResponseMsg::JsonNodeToggled(child.clone())))
+                .padding(0)
+                .width(Length::Fill)
+                .style(|_, status| iced::widget::button::Style {
+                    background: matches!(status, iced::widget::button::Status::Hovered)
+                        .then(|| Background::Color(Palette::hover())),
+                    text_color: Palette::text(),
+                    ..Default::default()
+                });
+            if expanded {
+                rows.push(
+                    column![
+                        head,
+                        container(json_table(v, &child, open, budget)).padding(iced::Padding {
+                            top: 0.0,
+                            right: 8.0,
+                            bottom: 8.0,
+                            left: 28.0,
+                        }),
+                    ]
+                    .into(),
+                );
+            } else {
+                rows.push(head.into());
+            }
+        } else {
+            let value_cell: Element<'a, Message> = match json_badge(v) {
+                Some(b) => badge_chip(b),
+                None => text(json_scalar(v))
+                    .size(12)
+                    .color(Palette::text_muted())
+                    .into(),
+            };
+            rows.push(
+                row![
+                    container(text(key).size(12).font(key_font).color(Palette::text()))
+                        .width(key_w)
+                        .padding([6, 8]),
+                    container(value_cell).padding([6, 8]).width(Length::Fill),
+                ]
+                .align_y(Alignment::Center)
+                .into(),
+            );
+        }
+    }
+    crate::ui::widgets::kv_table::frame(rows)
+}
+
+/// Non-empty objects and arrays open into a nested table.
+fn is_expandable(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Object(m) => !m.is_empty(),
+        serde_json::Value::Array(a) => !a.is_empty(),
+        _ => false,
+    }
 }
 
 /// Compact "Save" action matching the toolbar's Copy button. Writes the
@@ -710,4 +983,28 @@ fn donut(a: f32, b: f32) -> String {
         }
     }
     s
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+
+    #[test]
+    fn json_paths_cannot_collide() {
+        let a = json_child_path(&json_child_path("", "a"), "b");
+        let ab = json_child_path("", "a/b");
+        assert_ne!(a, ab);
+        assert_eq!(ab, "/a~1b");
+        assert_eq!(json_child_path("", "~1"), "/~01");
+    }
+
+    #[test]
+    fn json_badges_and_scalars_match_postman() {
+        assert_eq!(json_badge(&serde_json::json!({})).as_deref(), Some("{}"));
+        assert_eq!(json_badge(&serde_json::json!({"a": 1, "b": 2})).as_deref(), Some("{2}"));
+        assert_eq!(json_badge(&serde_json::json!([1])).as_deref(), Some("[1]"));
+        assert_eq!(json_scalar(&serde_json::json!("POST")), "POST");
+        assert_eq!(json_scalar(&serde_json::Value::Null), "null");
+        assert!(json_scalar(&serde_json::json!("x".repeat(5_000))).ends_with('…'));
+    }
 }
