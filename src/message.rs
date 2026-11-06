@@ -194,6 +194,14 @@ pub enum RequestMsg {
     /// Mouse over the body editor (`None` = left it): resolves the
     /// `{{variable}}` under it for the hover card.
     BodyHovered(Option<iced::Point>),
+    /// Arrow keys in the body editor's `{{` list (`true` = down).
+    BodyCompletionMoved(bool),
+    /// Enter in that list: apply the highlighted variable.
+    BodyCompletionAccepted,
+    /// A variable was clicked: the `{{name}}` to insert.
+    BodyCompletionPicked(String),
+    /// Escape or a click elsewhere closed the list.
+    BodyCompletionClosed,
     HeaderAdded,
     HeaderRemoved(usize),
     /// A Headers cell was clicked: open its autocomplete list.

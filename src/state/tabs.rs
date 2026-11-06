@@ -120,6 +120,16 @@ impl std::fmt::Display for BodyLang {
     }
 }
 
+/// The body editor's `{{` autocomplete: its rows and the token around the
+/// caret, as chars to remove on either side when one is picked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BodyCompletion {
+    pub items: Vec<crate::services::header_suggest::Suggestion>,
+    pub selected: usize,
+    pub back: usize,
+    pub forward: usize,
+}
+
 /// Which column of a Headers row an autocomplete list belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SuggestField {
@@ -179,6 +189,11 @@ pub struct RequestTabState {
     pub header_suggest: Option<HeaderSuggest>,
     /// `{{variable}}` under the mouse in the body editor, for its hover card.
     pub body_hover: Option<String>,
+    /// `{{variable}}` tokens of the body, marked over the editor. Refreshed on
+    /// every body change so the view never copies the buffer.
+    pub body_vars: Vec<crate::services::variables::VarToken>,
+    /// Open `{{` autocomplete list of the body editor.
+    pub body_completion: Option<BodyCompletion>,
     pub headers: Vec<KeyValue>,
     pub params: Vec<KeyValue>,
     pub body_type: BodyType,
@@ -331,6 +346,8 @@ impl RequestTabState {
             url_completion_selected: 0,
             header_suggest: None,
             body_hover: None,
+            body_vars: Vec::new(),
+            body_completion: None,
             headers: Vec::new(),
             params: Vec::new(),
             body_type: BodyType::None,
@@ -711,6 +728,50 @@ impl RequestTabState {
         self.response_editor.content().len()
     }
 
+    /// Re-scan the body for `{{variable}}` tokens. Huge bodies are skipped:
+    /// the scan copies the buffer and they are rarely hand-edited templates.
+    pub fn refresh_body_vars(&mut self) {
+        const MAX_BYTES: usize = 1024 * 1024;
+        let content = self.body_editor.content();
+        self.body_vars = if content.len() > MAX_BYTES {
+            Vec::new()
+        } else {
+            crate::services::variables::variable_tokens(&content)
+        };
+    }
+
+    /// Open, update or close the `{{` list for the caret's current token.
+    pub fn refresh_body_completion(
+        &mut self,
+        env: Option<&crate::domain::environment::AppEnvironment>,
+    ) {
+        self.body_completion = self.body_completion_at_caret(env);
+    }
+
+    fn body_completion_at_caret(
+        &self,
+        env: Option<&crate::domain::environment::AppEnvironment>,
+    ) -> Option<BodyCompletion> {
+        let (line_no, col) = self.body_editor.cursor_position();
+        let content = self.body_editor.content();
+        let line = content.lines().nth(line_no)?;
+        let caret = line
+            .char_indices()
+            .nth(col)
+            .map_or(line.len(), |(byte, _)| byte);
+        let (range, query) = crate::services::variables::completion(line, caret)?;
+        let items = crate::services::header_suggest::variable_list(query, env, "");
+        if items.is_empty() {
+            return None;
+        }
+        Some(BodyCompletion {
+            items,
+            selected: 0,
+            back: line[range.start..caret].chars().count(),
+            forward: line[caret..range.end].chars().count(),
+        })
+    }
+
     pub fn reset_body_editor(&mut self, text: &str) {
         let syntax = body_syntax_for(&self.body_type, text);
         let indent = if self.body_indent_tabs {
@@ -721,6 +782,8 @@ impl RequestTabState {
         let mut ed = make_code_editor(text, syntax);
         ed.set_indent_style(indent);
         self.body_editor = ed;
+        self.refresh_body_vars();
+        self.body_completion = None;
     }
 
     /// Replace the whole body through the editor's edit history (select-all +
@@ -740,8 +803,12 @@ impl RequestTabState {
         let _ = self
             .body_editor
             .update(&iced_code_editor::Message::SelectAll);
-        self.body_editor
-            .update(&iced_code_editor::Message::Paste(text))
+        let task = self
+            .body_editor
+            .update(&iced_code_editor::Message::Paste(text));
+        self.refresh_body_vars();
+        self.body_completion = None;
+        task
     }
 
     /// Re-applies the current palette to **every** code editor this tab owns.

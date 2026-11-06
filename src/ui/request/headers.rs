@@ -430,7 +430,9 @@ fn suggest_cell<'a>(
         .delay(std::time::Duration::from_millis(250));
     popup::popup_suggest(
         hover.into(),
-        suggest_list(row, field, list, selected),
+        suggest_list(list, selected, move |apply| {
+            Message::Request(RequestMsg::HeaderSuggestionPicked(row, field, apply))
+        }),
         Message::Request(RequestMsg::HeaderSuggestClosed),
         !list.is_empty(),
         popup::SuggestNav {
@@ -588,11 +590,10 @@ fn source_badge(source: Source) -> Element<'static, Message> {
 
 /// Postman's autocomplete card: a scrolling list under the cell, the
 /// highlighted row filled; variables carry a badge and their description.
-fn suggest_list<'a>(
-    row_index: usize,
-    field: SuggestField,
+pub(crate) fn suggest_list<'a>(
     list: &[Suggestion],
     selected: usize,
+    on_pick: impl Fn(String) -> Message,
 ) -> Element<'a, Message> {
     use iced::widget::tooltip;
     let selected = selected.min(list.len().saturating_sub(1));
@@ -609,11 +610,7 @@ fn suggest_list<'a>(
         .spacing(8)
         .align_y(Alignment::Center);
         let item = button(container(label).padding([6, 10]).width(Length::Fill))
-            .on_press(Message::Request(RequestMsg::HeaderSuggestionPicked(
-                row_index,
-                field,
-                s.apply.clone(),
-            )))
+            .on_press(on_pick(s.apply.clone()))
             .padding(0)
             .width(Length::Fill)
             .style(move |_, status| button::Style {

@@ -47,8 +47,21 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
     }
     if let RequestMsg::BodyHovered(point) = msg {
         let tab = state.tabs.active_tab_mut();
-        tab.body_hover = point.and_then(|p| body_variable_at(tab, p));
+        // The editor hit-tests in canvas coordinates; the mouse is in viewport ones.
+        tab.body_hover = point.and_then(|p| {
+            let y = p.y + tab.body_editor.viewport_scroll();
+            body_variable_at(tab, iced::Point::new(p.x, y))
+        });
         return Task::none();
+    }
+    if matches!(
+        &msg,
+        RequestMsg::BodyCompletionMoved(_)
+            | RequestMsg::BodyCompletionAccepted
+            | RequestMsg::BodyCompletionPicked(_)
+            | RequestMsg::BodyCompletionClosed
+    ) {
+        return handle_body_completion(state, msg);
     }
     if matches!(
         &msg,
@@ -74,6 +87,10 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
         | RequestMsg::UrlVariableDismissed
         | RequestMsg::AutoHeadersToggled
         | RequestMsg::BodyHovered(_)
+        | RequestMsg::BodyCompletionMoved(_)
+        | RequestMsg::BodyCompletionAccepted
+        | RequestMsg::BodyCompletionPicked(_)
+        | RequestMsg::BodyCompletionClosed
         | RequestMsg::HeaderSuggestOpened(..)
         | RequestMsg::HeaderSuggestClosed
         | RequestMsg::HeaderSuggestMoved(_)
@@ -211,6 +228,21 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
                 tab.modified = true;
             }
             let task = tab.body_editor.update(&msg);
+            if content_changed {
+                tab.refresh_body_vars();
+                tab.body_hover = None;
+            }
+            match &msg {
+                iced_code_editor::Message::CharacterInput(_)
+                | iced_code_editor::Message::Backspace
+                | iced_code_editor::Message::Delete => {
+                    tab.refresh_body_completion(state.environments.iter().find(|e| e.is_active));
+                }
+                iced_code_editor::Message::Scrolled(_)
+                | iced_code_editor::Message::HorizontalScrolled(_)
+                | iced_code_editor::Message::MouseHover(_) => {}
+                _ => tab.body_completion = None,
+            }
             // Keep the editor's language in step with what the buffer now holds.
             //
             // The syntax is otherwise fixed at construction, so pasting or typing
@@ -1318,6 +1350,8 @@ pub(super) fn apply_parsed_command(
         tab.cookies.clear();
         tab.body_type = BodyType::None;
         tab.body_editor = crate::state::tabs::make_code_editor("", "txt");
+        tab.body_vars.clear();
+        tab.body_completion = None;
         tab.form_fields.clear();
         tab.form_viewers.clear();
     }
@@ -1497,6 +1531,55 @@ fn body_variable_at(tab: &RequestTabState, point: iced::Point) -> Option<String>
         .nth(pos.character as usize)
         .map_or(line.len(), |(b, _)| b);
     crate::services::variables::variable_at(line, byte)
+}
+
+fn handle_body_completion(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
+    let tab = state.tabs.active_tab_mut();
+    match msg {
+        RequestMsg::BodyCompletionClosed => tab.body_completion = None,
+        RequestMsg::BodyCompletionMoved(down) => {
+            if let Some(c) = tab.body_completion.as_mut() {
+                let n = c.items.len().max(1);
+                c.selected = if down {
+                    (c.selected + 1) % n
+                } else {
+                    (c.selected + n - 1) % n
+                };
+            }
+        }
+        RequestMsg::BodyCompletionAccepted => {
+            let pick = tab
+                .body_completion
+                .as_ref()
+                .and_then(|c| c.items.get(c.selected))
+                .map(|s| s.apply.clone());
+            if let Some(apply) = pick {
+                return insert_body_variable(tab, apply);
+            }
+        }
+        RequestMsg::BodyCompletionPicked(apply) => return insert_body_variable(tab, apply),
+        _ => {}
+    }
+    Task::none()
+}
+
+/// Replace the token around the caret through the editor's own edit
+/// commands, so undo keeps working.
+fn insert_body_variable(tab: &mut RequestTabState, apply: String) -> Task<Message> {
+    use iced_code_editor::Message as Editor;
+    let Some(c) = tab.body_completion.take() else {
+        return Task::none();
+    };
+    for _ in 0..c.forward {
+        let _ = tab.body_editor.update(&Editor::Delete);
+    }
+    for _ in 0..c.back {
+        let _ = tab.body_editor.update(&Editor::Backspace);
+    }
+    let task = tab.body_editor.update(&Editor::Paste(apply));
+    tab.modified = true;
+    tab.refresh_body_vars();
+    task.map(|m| Message::Request(RequestMsg::BodyEdited(m)))
 }
 
 /// Typing in a Headers cell keeps its list open on that cell, back at the
@@ -1826,6 +1909,75 @@ mod header_suggest_tests {
             RequestMsg::HeaderSuggestionPicked(0, SuggestField::Key, "Accept".into()),
         );
         assert!(state.tabs.active_tab().headers.is_empty());
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod body_completion_tests {
+    use super::*;
+    use iced_code_editor::{ArrowDirection, Message as Editor};
+
+    /// Text ending in a throwaway char, then Backspace: the same refresh path
+    /// as typing, without the process-wide editor focus typing requires
+    /// (parallel tests would race for it).
+    fn edited_to(state: &mut AppState, text: &str) {
+        let _ = handle(
+            state,
+            RequestMsg::BodyEdited(Editor::Paste(format!("{text}x"))),
+        );
+        let _ = handle(state, RequestMsg::BodyEdited(Editor::Backspace));
+    }
+
+    #[test]
+
+    fn typing_double_brace_lists_variables_and_a_pick_replaces_the_token() {
+        let dir = std::env::temp_dir().join(format!("rustman-bodyc-{}", uuid::Uuid::new_v4()));
+        let (mut state, _) = crate::app::boot::init_at(dir.clone());
+        state
+            .environments
+            .iter_mut()
+            .for_each(|e| e.is_active = false);
+        edited_to(&mut state, "a {");
+        assert!(
+            state.tabs.active_tab().body_completion.is_none(),
+            "one brace is plain JSON"
+        );
+        let _ = handle(
+            &mut state,
+            RequestMsg::BodyEdited(Editor::Paste("{gu".into())),
+        );
+        edited_to(&mut state, "");
+        let list = state.tabs.active_tab().body_completion.clone().unwrap();
+        assert_eq!(list.items[0].label, "$guid");
+        assert_eq!((list.back, list.forward), (4, 0));
+
+        let _ = handle(&mut state, RequestMsg::BodyCompletionAccepted);
+        let tab = state.tabs.active_tab();
+        assert_eq!(tab.body_editor.content(), "a {{$guid}}");
+        assert!(tab.body_completion.is_none());
+        assert_eq!(tab.body_vars.len(), 1, "the new token gets marked");
+        assert!(tab.modified);
+
+        // Editing inside a closed token replaces the whole token.
+        for _ in 0..2 {
+            let _ = handle(
+                &mut state,
+                RequestMsg::BodyEdited(Editor::ArrowKey(ArrowDirection::Left, false)),
+            );
+        }
+        let _ = handle(&mut state, RequestMsg::BodyEdited(Editor::Backspace));
+        let c = state.tabs.active_tab().body_completion.clone().unwrap();
+        assert_eq!(c.forward, 2, "the closing braces go too");
+        let _ = handle(
+            &mut state,
+            RequestMsg::BodyCompletionPicked("{{$timestamp}}".into()),
+        );
+        assert_eq!(
+            state.tabs.active_tab().body_editor.content(),
+            "a {{$timestamp}}"
+        );
         drop(state);
         let _ = std::fs::remove_dir_all(dir);
     }

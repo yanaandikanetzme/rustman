@@ -222,8 +222,13 @@ fn rank(label: &str, query: &str) -> Option<u8> {
 /// Variables matching the query typed after `{`, replacing the token.
 fn variables(text: &str, env: Option<&AppEnvironment>) -> Option<Vec<Suggestion>> {
     let (start, query) = variable_trigger(text)?;
+    Some(variable_list(query, env, &text[..start]))
+}
+
+/// Environment then dynamic variables matching `query`; each `apply` is
+/// `head` + `{{name}}`.
+pub fn variable_list(query: &str, env: Option<&AppEnvironment>, head: &str) -> Vec<Suggestion> {
     let query = query.trim_start_matches('$');
-    let head = &text[..start];
     let mut env_keys: Vec<&String> = env
         .into_iter()
         .flat_map(|e| e.variables.keys())
@@ -251,7 +256,7 @@ fn variables(text: &str, env: Option<&AppEnvironment>) -> Option<Vec<Suggestion>
         detail,
     }));
     out.truncate(MAX);
-    Some(out)
+    out
 }
 
 /// Key column: header names, the table's own keys first (Postman lists
