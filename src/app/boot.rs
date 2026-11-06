@@ -184,6 +184,7 @@ pub(crate) fn init_at(data_dir: PathBuf) -> (AppState, Task<Message>) {
         browser_previews: Vec::new(),
         environment_cell: None,
         console_open: false,
+        console: Default::default(),
         notification: storage_error.map(|error| crate::state::notifications::Toast {
             kind: crate::state::notifications::ToastKind::Error,
             placement: crate::state::notifications::ToastPlacement::BottomRight,

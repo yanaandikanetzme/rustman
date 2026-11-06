@@ -268,6 +268,8 @@ pub struct RequestTabState {
     pub jwt_secret: String,
     pub jwt_subject: String,
     pub jwt_algo: String,
+    /// The request being sent, for the Console once its response arrives.
+    pub console_request: Option<crate::state::console::ConsoleRequest>,
     pub script_phase: ScriptPhase,
     /// Open autocomplete of the shown script editor.
     pub script_completion: Option<BodyCompletion>,
@@ -421,6 +423,7 @@ impl RequestTabState {
             jwt_secret: String::new(),
             jwt_subject: String::new(),
             jwt_algo: "HS256".to_owned(),
+            console_request: None,
             script_phase: ScriptPhase::default(),
             script_completion: None,
             pre_request_editor: make_code_editor("", SCRIPT_SYNTAX),

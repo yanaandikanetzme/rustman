@@ -70,7 +70,7 @@ pub(crate) fn test_host_input(
 /// `SetHeader`, `SetBody`, and `Test` are just returned for the caller to use
 /// (a pre-request send merges headers into the outgoing request and can
 /// override its body; a completed response stores test results on the tab).
-fn diagnostic_redactor(state: &AppState) -> crate::services::secrets::Redactor {
+pub(crate) fn diagnostic_redactor(state: &AppState) -> crate::services::secrets::Redactor {
     let mut redactor = crate::services::secrets::Redactor::default();
     // Include all tabs: a response can arrive after the user switches tabs.
     for tab in &state.tabs.tabs {

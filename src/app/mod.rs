@@ -16,6 +16,7 @@ use crate::{
 };
 
 mod boot;
+mod console;
 mod drafts;
 pub(crate) mod notifications;
 mod request_ops;
@@ -37,6 +38,7 @@ pub struct AppState {
     pub browser_previews: Vec<crate::services::preview_file::PreviewFile>,
     pub environment_cell: Option<crate::state::environment_cell::EnvironmentCellEditor>,
     pub console_open: bool,
+    pub console: crate::state::console::ConsoleState,
     pub notification: Option<crate::state::notifications::Toast>,
     pub examples: crate::state::examples::ExamplesState,
     pub tabs: TabManager,

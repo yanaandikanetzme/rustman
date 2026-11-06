@@ -151,7 +151,13 @@ pub(crate) fn marks_session_dirty(message: &Message) -> bool {
     }
     if matches!(
         message,
-        Message::Layout(LayoutMsg::ConsoleToggled | LayoutMsg::SnippetCopied)
+        Message::Layout(
+            LayoutMsg::ConsoleToggled
+                | LayoutMsg::ConsoleCleared
+                | LayoutMsg::ConsoleCopied
+                | LayoutMsg::ConsoleRowToggled(_)
+                | LayoutMsg::SnippetCopied
+        )
             | Message::Sidebar(crate::message::SidebarMsg::EnvironmentPageClosed)
             | Message::App(crate::message::AppMsg::OpenTerminal)
             | Message::Response(crate::message::ResponseMsg::ConsoleEdited(_))
@@ -407,6 +413,11 @@ fn blocks_example_exit(state: &mut AppState, message: &Message) -> bool {
 fn handle_layout(state: &mut AppState, msg: LayoutMsg) -> Task<Message> {
     match msg {
         LayoutMsg::ConsoleToggled => state.console_open = !state.console_open,
+        LayoutMsg::ConsoleCleared => state.console.clear(),
+        LayoutMsg::ConsoleCopied => {
+            return iced::clipboard::write::<Message>(state.console.to_text());
+        }
+        LayoutMsg::ConsoleRowToggled(key) => state.console.toggle(key),
         LayoutMsg::ZoomIn => state.ui_scale = (state.ui_scale + 0.1).min(2.0),
         LayoutMsg::ZoomOut => state.ui_scale = (state.ui_scale - 0.1).max(0.5),
         LayoutMsg::ZoomReset => state.ui_scale = 1.0,

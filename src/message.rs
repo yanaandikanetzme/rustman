@@ -622,6 +622,12 @@ pub enum ImportMsg {
 #[derive(Debug, Clone)]
 pub enum LayoutMsg {
     ConsoleToggled,
+    /// Empty the Console.
+    ConsoleCleared,
+    /// Copy the whole Console as text.
+    ConsoleCopied,
+    /// Open or close a Console row or section.
+    ConsoleRowToggled(String),
     ZoomIn,
     ZoomOut,
     ZoomReset,

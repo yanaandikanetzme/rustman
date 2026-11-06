@@ -167,6 +167,13 @@ pub(super) fn handle(state: &mut AppState, msg: AppMsg) -> Task<Message> {
                     }
                 }
 
+                crate::app::console::record_response(
+                    state,
+                    &tab_id,
+                    &result.response,
+                    &test_logs,
+                    test_error.as_deref(),
+                );
                 if let Some(t) = state.tabs.tabs.iter_mut().find(|t| t.id == tab_id) {
                     t.test_results = test_results;
                     t.script_error = test_error;

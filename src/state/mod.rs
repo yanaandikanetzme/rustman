@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod collections_modal;
+pub mod console;
 pub mod drafts;
 pub mod environment_cell;
 pub mod examples;
