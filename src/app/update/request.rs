@@ -2515,12 +2515,23 @@ mod header_suggest_tests {
             ..crate::domain::request::KeyValue::new_empty()
         };
         let tab = state.tabs.active_tab_mut();
-        tab.headers = vec![kv("Authorization"), kv("{{name}}"), kv("Accept")];
+        tab.headers = vec![
+            kv("X-Api-Key"),
+            kv("{{name}}"),
+            kv("Accept"),
+            kv("Authorization"),
+        ];
         tab.params = vec![kv("api_key"), kv("page")];
         let tab = state.tabs.active_tab();
         assert!(tab.field_secret(0, SuggestField::Value));
         assert!(tab.field_secret(1, SuggestField::Value));
         assert!(!tab.field_secret(2, SuggestField::Value));
+        assert!(
+            !tab.field_secret(3, SuggestField::Value),
+            "a typed Authorization header is an ordinary field"
+        );
+        let list = crate::services::header_suggest::for_value("Authorization", "", None);
+        assert!(list.is_empty(), "no scheme presets: {list:?}");
         assert!(tab.field_secret(0, SuggestField::ParamValue));
         assert!(!tab.field_secret(1, SuggestField::ParamValue));
         drop(state);

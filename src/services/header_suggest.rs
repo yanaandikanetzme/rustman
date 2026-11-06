@@ -115,7 +115,6 @@ fn known_values(key: &str) -> &'static [&'static str] {
         ],
         "accept-language" => &["en-US,en;q=0.9", "en-US", "en", "id-ID,id;q=0.9", "*"],
         "accept-charset" => &["utf-8", "iso-8859-1", "*"],
-        "authorization" => &["Bearer ", "Basic "],
         "cache-control" => &[
             "no-cache",
             "no-store",

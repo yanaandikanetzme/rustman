@@ -814,12 +814,16 @@ impl RequestTabState {
 
     /// Typed text in the field is a credential: the value of a header or
     /// param whose key is sensitive (or a variable, which could name one),
-    /// or a secret Auth field (the password unless its eye is open).
+    /// or a secret Auth field (the password unless its eye is open). A typed
+    /// Authorization header is an ordinary field: it carries custom schemes
+    /// that have to stay readable while they are written.
     pub fn field_secret(&self, row: usize, field: SuggestField) -> bool {
         let secret_key =
             |key: &str| crate::services::variables::sensitive(key) || key.contains("{{");
         match field {
-            SuggestField::Value => self.headers.get(row).is_some_and(|h| secret_key(&h.key)),
+            SuggestField::Value => self.headers.get(row).is_some_and(|h| {
+                !h.key.trim().eq_ignore_ascii_case("authorization") && secret_key(&h.key)
+            }),
             SuggestField::ParamValue => self.params.get(row).is_some_and(|p| secret_key(&p.key)),
             SuggestField::Auth(AuthField::BasicPass) => !self.show_basic_pass,
             SuggestField::Auth(field) => field.secret(),
