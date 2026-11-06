@@ -277,6 +277,11 @@ pub struct RequestTabState {
     /// A selection drag is running in the body editor: no card may open
     /// under the mouse and take its events.
     pub body_dragging: bool,
+    /// Where the mouse is over the body editor, in viewport pixels.
+    pub body_pointer: Option<iced::Point>,
+    /// A press in the body editor that can still become a click: the pointer
+    /// then, and the press as the editor reported it.
+    pub body_press: Option<(iced::Point, iced::Point)>,
     /// The Headers cell under the mouse.
     pub header_hover: Option<(usize, SuggestField)>,
     /// `{{variable}}` tokens of the body, marked over the editor. Refreshed on
@@ -443,6 +448,8 @@ impl RequestTabState {
             body_hover: None,
             var_card: None,
             body_dragging: false,
+            body_pointer: None,
+            body_press: None,
             header_hover: None,
             body_vars: Vec::new(),
             body_completion: None,
@@ -1022,6 +1029,9 @@ impl RequestTabState {
         if self.body_type != req.body_type || self.body_editor.content() != req.body {
             self.body_editor =
                 make_code_editor(&req.body, body_syntax_for(&req.body_type, &req.body));
+            self.refresh_body_vars();
+            self.body_completion = None;
+            self.var_card = None;
         }
         self.body_type = req.body_type.clone();
         if self.graphql_variables_editor.content() != req.graphql_variables {

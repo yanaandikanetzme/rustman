@@ -273,7 +273,18 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
                 tab.refresh_body_vars();
             }
             match &msg {
-                iced_code_editor::Message::MouseClick(_) => tab.body_dragging = true,
+                iced_code_editor::Message::MouseClick(press) => {
+                    tab.body_dragging = true;
+                    tab.body_press = tab.body_pointer.map(|pointer| (pointer, *press));
+                }
+                iced_code_editor::Message::MouseDrag(to) => {
+                    let moved = tab
+                        .body_press
+                        .is_some_and(|(_, press)| press.distance(*to) > CLICK_SLOP);
+                    if moved {
+                        tab.body_press = None;
+                    }
+                }
                 iced_code_editor::Message::MouseRelease => tab.body_dragging = false,
                 _ => {}
             }
@@ -282,12 +293,19 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
                 || matches!(
                     &msg,
                     iced_code_editor::Message::MouseClick(_)
+                        | iced_code_editor::Message::DoubleClick(_)
+                        | iced_code_editor::Message::TripleClick(_)
                         | iced_code_editor::Message::Scrolled(_)
                         | iced_code_editor::Message::HorizontalScrolled(_)
                 )
             {
                 tab.body_hover = None;
                 tab.var_card = None;
+            }
+            if matches!(&msg, iced_code_editor::Message::MouseRelease)
+                && let Some((pointer, _)) = tab.body_press.take()
+            {
+                open_body_card(tab, pointer, true);
             }
             match crate::state::tabs::completion_effect(&msg) {
                 crate::state::tabs::CompletionEffect::Refresh => {
@@ -1484,6 +1502,7 @@ pub(super) fn apply_parsed_command(
             };
             tab.body_editor =
                 crate::state::tabs::make_code_editor(&body, if is_json { "json" } else { "txt" });
+            tab.refresh_body_vars();
         }
         tab.active_request_tab = crate::message::RequestTab::Body;
     } else if auth_detected {
@@ -1589,6 +1608,38 @@ fn body_token_at(
         .find(|t| t.line == line && (t.start..t.end).contains(&column))
 }
 
+/// A press that moves further than this is a selection, not a click.
+const CLICK_SLOP: f32 = 3.0;
+
+/// Open the card of the body token at `point`, in viewport pixels. A clicked
+/// one is pinned: it stays until dismissed, so the mouse is free to wander.
+fn open_body_card(tab: &mut RequestTabState, point: iced::Point, pinned: bool) {
+    let Some(name) = body_token_at(tab, point).map(|t| t.name.clone()) else {
+        return;
+    };
+    let rects = crate::ui::request::body::variable_rects(&tab.body_editor, &tab.body_vars);
+    let anchor = rects.iter().find_map(|r| {
+        let rect = iced::Rectangle {
+            x: r.x,
+            y: r.y,
+            width: r.width,
+            height: r.height,
+        };
+        rect.contains(point).then_some(rect)
+    });
+    if let Some(anchor) = anchor {
+        tab.var_card = Some(crate::state::tabs::VarCard {
+            names: vec![name],
+            anchor: crate::state::tabs::VarCardAnchor::Body(anchor),
+            mask_all: false,
+            over_card: false,
+            pinned,
+            revealed: false,
+            copied: None,
+        });
+    }
+}
+
 /// How long a Headers card waits for the mouse to cross the gap to it.
 const VAR_CARD_LEAVE_MS: u64 = 150;
 
@@ -1649,6 +1700,7 @@ fn handle_var_card(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
     let tab = state.tabs.active_tab_mut();
     match msg {
         RequestMsg::BodyHovered(point) => {
+            tab.body_pointer = point;
             if tab.body_dragging || tab.body_completion.is_some() {
                 tab.body_hover = None;
                 return Task::none();
@@ -1689,27 +1741,7 @@ fn handle_var_card(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
             if tab.var_card.is_some() || tab.body_dragging || tab.body_completion.is_some() {
                 return Task::none();
             }
-            let rects = crate::ui::request::body::variable_rects(&tab.body_editor, &tab.body_vars);
-            let anchor = rects.iter().find_map(|r| {
-                let rect = iced::Rectangle {
-                    x: r.x,
-                    y: r.y,
-                    width: r.width,
-                    height: r.height,
-                };
-                rect.contains(hover.point).then_some(rect)
-            });
-            if let Some(anchor) = anchor {
-                tab.var_card = Some(crate::state::tabs::VarCard {
-                    names: vec![name],
-                    anchor: crate::state::tabs::VarCardAnchor::Body(anchor),
-                    mask_all: false,
-                    over_card: false,
-                    pinned: false,
-                    revealed: false,
-                    copied: None,
-                });
-            }
+            open_body_card(tab, hover.point, false);
         }
         RequestMsg::VarCardHover(over) => {
             if let Some(card) = &mut tab.var_card {
@@ -2425,6 +2457,41 @@ mod var_card_tests {
         assert!(state.tabs.active_tab().var_card.is_none());
         drop(state);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn clicking_a_token_pins_its_card_but_dragging_from_it_does_not() {
+        let (mut state, dir, at) = setup();
+        let _ = handle(&mut state, RequestMsg::BodyHovered(Some(at)));
+        let _ = handle(&mut state, RequestMsg::BodyEdited(Editor::MouseClick(at)));
+        assert!(state.tabs.active_tab().var_card.is_none());
+        let _ = handle(&mut state, RequestMsg::BodyEdited(Editor::MouseRelease));
+        let card = state.tabs.active_tab().var_card.clone().unwrap();
+        assert_eq!(card.names, ["token"]);
+        assert!(card.pinned, "a clicked card stays while the mouse moves");
+        let _ = handle(&mut state, RequestMsg::VarCardClosed);
+
+        let _ = handle(&mut state, RequestMsg::BodyEdited(Editor::MouseClick(at)));
+        let far = iced::Point::new(at.x + 40.0, at.y);
+        let _ = handle(&mut state, RequestMsg::BodyEdited(Editor::MouseDrag(far)));
+        let _ = handle(&mut state, RequestMsg::BodyEdited(Editor::MouseRelease));
+        assert!(state.tabs.active_tab().var_card.is_none());
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_request_opened_from_the_sidebar_has_its_tokens_marked() {
+        let mut saved = crate::app::request_ops::saved_request_from_tab(
+            &RequestTabState::new(),
+            String::new(),
+            String::new(),
+        );
+        saved.body = "{\"name\": \"{{body}}\"}".into();
+        saved.body_type = crate::domain::request::BodyType::Json;
+        let tab = RequestTabState::from_saved(&saved);
+        assert_eq!(tab.body_vars.len(), 1);
+        assert_eq!(tab.body_vars[0].name, "body");
     }
 
     #[test]

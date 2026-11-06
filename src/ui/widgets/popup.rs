@@ -401,6 +401,14 @@ impl<Message: Clone, Theme, Renderer: renderer::Renderer> overlay::Overlay<Messa
             if closes.get() {
                 shell.publish(self.close.clone());
             }
+        } else if self.nav.is_some() {
+            // Accepting a suggestion reads the open list (what it replaces),
+            // so the list has to outlive the pick.
+            let picked = !menu_shell.is_empty();
+            shell.merge(menu_shell, |action| action);
+            if picked {
+                shell.publish(self.close.clone());
+            }
         } else {
             if !menu_shell.is_empty() {
                 shell.publish(self.close.clone());
@@ -514,6 +522,50 @@ mod tests {
         assert!(shell.is_event_captured());
         assert_eq!(messages, vec![true]);
     }
+    #[test]
+    fn a_clicked_suggestion_is_delivered_before_its_list_closes() {
+        use iced::advanced::Shell;
+        use iced::advanced::overlay::Overlay;
+        let mut menu: Element<'_, &str, iced::Theme, ()> =
+            iced::widget::button(Space::new().width(100).height(20))
+                .on_press("pick")
+                .into();
+        let mut tree = Tree::new(&menu);
+        let mut overlay = MenuOverlay {
+            menu: &mut menu,
+            tree: &mut tree,
+            anchor: Rectangle::with_size(Size::new(1.0, 20.0)),
+            close: "close",
+            align_left: true,
+            keep_open: None,
+            pass_outside: true,
+            nav: Some(SuggestNav {
+                up: "up",
+                down: "down",
+                enter: "enter",
+            }),
+        };
+        let node = overlay.layout(&(), Size::new(400.0, 800.0));
+        let center = node.bounds().center();
+        let mut messages = Vec::new();
+        let mut shell = Shell::new(&mut messages);
+        let mut clipboard = iced::advanced::clipboard::Null;
+        for event in [
+            mouse::Event::ButtonPressed(mouse::Button::Left),
+            mouse::Event::ButtonReleased(mouse::Button::Left),
+        ] {
+            overlay.update(
+                &Event::Mouse(event),
+                Layout::new(&node),
+                mouse::Cursor::Available(center),
+                &(),
+                &mut clipboard,
+                &mut shell,
+            );
+        }
+        assert_eq!(messages, vec!["pick", "close"]);
+    }
+
     #[test]
     fn left_popup_stays_anchored_and_allows_input_clicks() {
         use iced::advanced::overlay::Overlay;
