@@ -120,6 +120,48 @@ impl std::fmt::Display for BodyLang {
     }
 }
 
+/// What an editor message does to its open autocomplete list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompletionEffect {
+    /// The text under the caret changed.
+    Refresh,
+    /// The caret or the text moved away.
+    Close,
+    Keep,
+}
+
+/// A list closes only on what moves the caret away: the editor also emits
+/// bookkeeping messages, which must not take the list from under the typist.
+pub fn completion_effect(message: &iced_code_editor::Message) -> CompletionEffect {
+    use iced_code_editor::Message as Editor;
+    match message {
+        Editor::CharacterInput(_) | Editor::ImeCommit(_) | Editor::Backspace | Editor::Delete => {
+            CompletionEffect::Refresh
+        }
+        Editor::Enter
+        | Editor::Tab
+        | Editor::ArrowKey(..)
+        | Editor::Home(_)
+        | Editor::End(_)
+        | Editor::PageUp
+        | Editor::PageDown
+        | Editor::CtrlHome
+        | Editor::CtrlEnd
+        | Editor::GotoPosition(..)
+        | Editor::MouseClick(_)
+        | Editor::DoubleClick(_)
+        | Editor::TripleClick(_)
+        | Editor::SelectAll
+        | Editor::Paste(_)
+        | Editor::Cut
+        | Editor::Undo
+        | Editor::Redo
+        | Editor::ToggleComment
+        | Editor::CanvasFocusLost => CompletionEffect::Close,
+        _ => CompletionEffect::Keep,
+    }
+}
+
 /// Scripts of both languages read fine as JavaScript.
 const SCRIPT_SYNTAX: &str = "js";
 
@@ -612,14 +654,15 @@ impl RequestTabState {
         let content = editor.content();
         self.script_completion = content
             .lines()
+            .chain(content.is_empty().then_some(""))
             .nth(line_no)
-            .and_then(|line| crate::services::pm_script::completions_at(line, column))
+            .and_then(|line| crate::services::pm_script::completions_at(line, column, &content))
             .map(|(list, back)| BodyCompletion {
                 items: list
                     .into_iter()
                     .map(|(label, detail)| Suggestion {
-                        label: (*label).to_owned(),
-                        apply: (*label).to_owned(),
+                        apply: label.clone(),
+                        label,
                         source: Source::Plain,
                         detail,
                     })

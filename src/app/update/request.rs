@@ -289,16 +289,12 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
                 tab.body_hover = None;
                 tab.var_card = None;
             }
-            match &msg {
-                iced_code_editor::Message::CharacterInput(_)
-                | iced_code_editor::Message::Backspace
-                | iced_code_editor::Message::Delete => {
+            match crate::state::tabs::completion_effect(&msg) {
+                crate::state::tabs::CompletionEffect::Refresh => {
                     tab.refresh_body_completion(state.environments.iter().find(|e| e.is_active));
                 }
-                iced_code_editor::Message::Scrolled(_)
-                | iced_code_editor::Message::HorizontalScrolled(_)
-                | iced_code_editor::Message::MouseHover(_) => {}
-                _ => tab.body_completion = None,
+                crate::state::tabs::CompletionEffect::Close => tab.body_completion = None,
+                crate::state::tabs::CompletionEffect::Keep => {}
             }
             // Keep the editor's language in step with what the buffer now holds.
             //
@@ -1801,13 +1797,10 @@ fn handle_var_card(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
 
 /// Typing updates the script autocomplete, moving the caret closes it.
 fn after_script_edit(tab: &mut RequestTabState, msg: &iced_code_editor::Message) {
-    use iced_code_editor::Message as Editor;
-    match msg {
-        Editor::CharacterInput(_) | Editor::Backspace | Editor::Delete => {
-            tab.refresh_script_completion();
-        }
-        Editor::Scrolled(_) | Editor::HorizontalScrolled(_) | Editor::MouseHover(_) => {}
-        _ => tab.script_completion = None,
+    match crate::state::tabs::completion_effect(msg) {
+        crate::state::tabs::CompletionEffect::Refresh => tab.refresh_script_completion(),
+        crate::state::tabs::CompletionEffect::Close => tab.script_completion = None,
+        crate::state::tabs::CompletionEffect::Keep => {}
     }
 }
 
@@ -2572,6 +2565,38 @@ mod script_ui_tests {
         assert!(tab.pre_request_editor.content().is_empty());
         assert!(tab.script_completion.is_none());
         assert!(tab.modified);
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_scripts_own_variable_is_offered_after_an_open_paren() {
+        let (mut state, dir) = setup();
+        let _ = handle(
+            &mut state,
+            RequestMsg::ScriptPhaseSelected(ScriptPhase::After),
+        );
+        let _ = handle(
+            &mut state,
+            RequestMsg::TestScriptEdited(Editor::Paste(
+                "var data = JSON.parse(responseBody)\nconsole.log(x".into(),
+            )),
+        );
+        let _ = handle(&mut state, RequestMsg::TestScriptEdited(Editor::Backspace));
+        let list = state.tabs.active_tab().script_completion.clone().unwrap();
+        assert_eq!(list.items[0].label, "data");
+        // Bookkeeping from the editor leaves the list alone; moving away does not.
+        let _ = handle(&mut state, RequestMsg::TestScriptEdited(Editor::Tick));
+        assert!(state.tabs.active_tab().script_completion.is_some());
+        let _ = handle(&mut state, RequestMsg::ScriptCompletionAccepted);
+        assert!(
+            state
+                .tabs
+                .active_tab()
+                .test_editor
+                .content()
+                .ends_with("console.log(data")
+        );
         drop(state);
         let _ = std::fs::remove_dir_all(dir);
     }

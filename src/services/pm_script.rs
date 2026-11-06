@@ -135,12 +135,33 @@ const COMPLETIONS: &[(&str, &str)] = &[
 /// Most suggestions the list shows.
 const MAX_COMPLETIONS: usize = 8;
 
-/// Suggestions for the word ending at char column `caret` of `line`, and the
-/// length of that word in chars. `None` inside a string or without a word.
+/// `var`/`let`/`const` names of a script, in order, without repeats. A scan
+/// rather than a parse: the script is usually mid-edit and does not parse.
+fn declared_names(script: &str) -> Vec<&str> {
+    let mut out: Vec<&str> = Vec::new();
+    let mut words = script
+        .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
+        .filter(|w| !w.is_empty());
+    while let Some(word) = words.next() {
+        if matches!(word, "var" | "let" | "const")
+            && let Some(name) = words.next()
+            && !out.contains(&name)
+        {
+            out.push(name);
+        }
+    }
+    out
+}
+
+/// Suggestions at char column `caret` of `line` in `script`, and the length
+/// in chars of the word they replace. `None` inside a string or with nothing
+/// to offer. Right after `(` or `,` there is no word yet, and the script's own
+/// variables are what fits there.
 pub fn completions_at(
     line: &str,
     caret: usize,
-) -> Option<(Vec<&'static (&'static str, &'static str)>, usize)> {
+    script: &str,
+) -> Option<(Vec<(String, &'static str)>, usize)> {
     let chars: Vec<char> = line.chars().collect();
     let before = chars.get(..caret)?;
     let mut quote = None;
@@ -159,16 +180,31 @@ pub fn completions_at(
     }
     let is_word = |c: &&char| c.is_alphanumeric() || matches!(**c, '_' | '$' | '.');
     let length = before.iter().rev().take_while(is_word).count();
-    if length == 0 {
-        return None;
-    }
     let word: String = before[caret - length..].iter().collect();
     let lower = word.to_lowercase();
-    let list: Vec<_> = COMPLETIONS
+    let in_arguments = before
         .iter()
-        .filter(|(label, _)| label.to_lowercase().starts_with(&lower) && *label != word)
-        .take(MAX_COMPLETIONS)
+        .rev()
+        .find(|c| !c.is_whitespace())
+        .is_some_and(|c| matches!(c, '(' | ','));
+    if length == 0 && !in_arguments {
+        return None;
+    }
+    let matching = |label: &str| label.to_lowercase().starts_with(&lower) && label != word;
+    let mut list: Vec<(String, &'static str)> = declared_names(script)
+        .into_iter()
+        .filter(|name| matching(name))
+        .map(|name| (name.to_owned(), "Variable in this script"))
         .collect();
+    if length > 0 {
+        list.extend(
+            COMPLETIONS
+                .iter()
+                .filter(|(label, _)| matching(label))
+                .map(|(label, detail)| ((*label).to_owned(), *detail)),
+        );
+    }
+    list.truncate(MAX_COMPLETIONS);
     (!list.is_empty()).then_some((list, length))
 }
 
@@ -1420,7 +1456,15 @@ impl Runner {
                 None
             }
             "console.log" | "console.info" | "console.warn" | "console.error" | "console.debug" => {
-                let line: Vec<String> = args.iter().map(display).collect();
+                let line: Vec<String> = args
+                    .iter()
+                    .map(|arg| match arg {
+                        Some(value @ (Value::Array(_) | Value::Object(_))) => {
+                            serde_json::to_string_pretty(value).unwrap_or_else(|_| display(arg))
+                        }
+                        _ => display(arg),
+                    })
+                    .collect();
                 self.effects.push(Effect::Log(line.join(" ")));
                 None
             }
@@ -1577,6 +1621,16 @@ mod tests {
     }
 
     #[test]
+    fn console_log_spreads_objects_over_lines() {
+        let effects = run(
+            "console.log(\"got\", JSON.parse(responseBody));",
+            after(r#"{"a":1}"#),
+        )
+        .unwrap();
+        assert_eq!(logs(&effects), ["got {\n  \"a\": 1\n}"]);
+    }
+
+    #[test]
     fn a_missing_field_warns_instead_of_storing_undefined() {
         let script = r#"pm.environment.set("x", pm.response.json().nope);"#;
         let effects = run(script, after("{}")).unwrap();
@@ -1710,15 +1764,30 @@ mod tests {
 
     #[test]
     fn completions_follow_the_word_and_stay_out_of_strings() {
-        let (list, length) = completions_at("  pm.env", 8).unwrap();
+        let (list, length) = completions_at("  pm.env", 8, "").unwrap();
         assert_eq!(length, 6);
         assert_eq!(list[0].0, "pm.environment.set");
         assert!(list.iter().all(|(l, _)| l.starts_with("pm.environment")));
-        assert_eq!(completions_at("json", 4).unwrap().0[0].0, "JSON.parse");
-        assert!(completions_at("x = \"pm", 7).is_none());
-        assert!(completions_at("zzz", 3).is_none());
-        assert!(completions_at("", 0).is_none());
-        assert!(completions_at("pm.test", 7).is_none(), "already complete");
+        assert_eq!(completions_at("json", 4, "").unwrap().0[0].0, "JSON.parse");
+        assert!(completions_at("x = \"pm", 7, "").is_none());
+        assert!(completions_at("zzz", 3, "").is_none());
+        assert!(completions_at("", 0, "").is_none());
+        assert!(
+            completions_at("pm.test", 7, "").is_none(),
+            "already complete"
+        );
+        // The script's own variables: while typing, and right after `(`.
+        let script = "var data = JSON.parse(responseBody)\nconst token = 1\nconsole.log(";
+        let (list, length) = completions_at("console.log(", 12, script).unwrap();
+        let names: Vec<&str> = list.iter().map(|(l, _)| l.as_str()).collect();
+        assert_eq!((names, length), (vec!["data", "token"], 0));
+        let (list, length) = completions_at("console.log(da", 14, script).unwrap();
+        assert_eq!((list[0].0.as_str(), length), ("data", 2));
+        assert!(completions_at("console.log(", 12, "").is_none());
+        assert!(
+            completions_at("  ", 2, script).is_none(),
+            "no word, no call"
+        );
         // Every suggestion the runner would then refuse would be a lie.
         for (label, _) in COMPLETIONS {
             let source = match *label {
