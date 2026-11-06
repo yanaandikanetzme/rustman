@@ -60,12 +60,32 @@ pub(super) fn view<'a>(state: &'a AppState, docs: &'a CollectionDocs) -> Element
     )))
     .padding([3, 8])
     .style(iced::widget::button::text);
-    let top = container(
+    let close = mini::icon_button(
+        icons::close(),
+        "Close",
+        Some(docs_msg(SidebarMsg::DocsClosed)),
+        false,
+    );
+    if !docs.full {
+        return overview(docs, close);
+    }
+    let back = button(
         row![
+            icons::arrow_left().size(12).color(Palette::text_muted()),
             text(docs.name.as_str())
                 .size(13)
                 .font(semibold())
                 .color(Palette::text()),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center),
+    )
+    .on_press(docs_msg(SidebarMsg::DocsFullToggled(false)))
+    .padding([3, 6])
+    .style(iced::widget::button::text);
+    let top = container(
+        row![
+            tooltip(back, "Back to the overview"),
             Space::new().width(Length::Fill),
             text("Language").size(12).color(Palette::text_muted()),
             mini::anchored_menu(
@@ -74,12 +94,7 @@ pub(super) fn view<'a>(state: &'a AppState, docs: &'a CollectionDocs) -> Element
                 lang_items,
                 200.0
             ),
-            mini::icon_button(
-                icons::close(),
-                "Close documentation",
-                Some(docs_msg(SidebarMsg::DocsClosed)),
-                false,
-            ),
+            close,
         ]
         .spacing(8)
         .align_y(Alignment::Center),
@@ -126,6 +141,137 @@ pub(super) fn view<'a>(state: &'a AppState, docs: &'a CollectionDocs) -> Element
         container(container(page.padding([24, 24])).max_width(780))
             .center_x(Length::Fill)
             .padding(iced::padding::bottom(40)),
+    )
+    .height(Length::Fill)
+    .style(crate::ui::theme::thin_scrollbar);
+    column![
+        top,
+        rule::horizontal(1).style(crate::ui::styles::divider),
+        body
+    ]
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
+}
+
+fn tooltip<'a>(content: impl Into<Element<'a, Message>>, tip: &'a str) -> Element<'a, Message> {
+    iced::widget::tooltip(
+        content,
+        container(text(tip).size(12).color(Palette::text()))
+            .padding([5, 8])
+            .style(|_| container::Style {
+                background: Some(Background::Color(Palette::surface_high())),
+                border: Border {
+                    color: Palette::border(),
+                    width: 1.0,
+                    radius: 5.0.into(),
+                },
+                ..Default::default()
+            }),
+        iced::widget::tooltip::Position::Bottom,
+    )
+    .into()
+}
+
+/// When a collection was created, from either unit storage has used.
+fn created_label(created_at: i64) -> Option<String> {
+    if created_at <= 0 {
+        return None;
+    }
+    // Older imports stored seconds, everything else milliseconds.
+    let millis = if created_at < 100_000_000_000 {
+        created_at * 1000
+    } else {
+        created_at
+    };
+    let at = chrono::DateTime::from_timestamp_millis(millis)?.with_timezone(&chrono::Local);
+    Some(at.format("%-I:%M %p, %B %d, %Y").to_string())
+}
+
+/// Postman's collection Overview: the name, what it holds, when it was made,
+/// and the way into the complete documentation.
+fn overview<'a>(docs: &'a CollectionDocs, close: Element<'a, Message>) -> Element<'a, Message> {
+    let overview_tab = container(
+        text("Overview")
+            .size(12)
+            .font(UI_FONT_MEDIUM)
+            .color(Palette::text()),
+    )
+    .padding([4, 8])
+    .style(|_| container::Style {
+        background: Some(Background::Color(Palette::surface_high())),
+        border: Border {
+            radius: 4.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let top = container(
+        row![overview_tab, Space::new().width(Length::Fill), close]
+            .spacing(8)
+            .align_y(Alignment::Center),
+    )
+    .padding([8, 16]);
+    let plural = |n: usize, one: &str, many: &str| {
+        if n == 1 {
+            format!("1 {one}")
+        } else {
+            format!("{n} {many}")
+        }
+    };
+    let mut facts = row![
+        icons::send().size(12).color(Palette::text_muted()),
+        text(plural(docs.request_count, "request", "requests"))
+            .size(12)
+            .color(Palette::text_muted()),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center);
+    if docs.folder_count > 0 {
+        facts = facts.push(Space::new().width(10)).push(
+            row![
+                icons::folder().size(12).color(Palette::text_muted()),
+                text(plural(docs.folder_count, "folder", "folders"))
+                    .size(12)
+                    .color(Palette::text_muted()),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center),
+        );
+    }
+    let mut page = column![
+        text(docs.name.as_str())
+            .size(24)
+            .font(semibold())
+            .color(Palette::text()),
+        facts,
+    ]
+    .spacing(12);
+    if let Some(created) = created_label(docs.created_at) {
+        page = page.push(
+            row![
+                icons::timer().size(12).color(Palette::text_muted()),
+                text(created).size(12).color(Palette::text_muted()),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center),
+        );
+    }
+    page = page
+        .push(rule::horizontal(1).style(crate::ui::styles::divider))
+        .push(Space::new().height(8))
+        .push(
+            button(
+                text("View complete documentation")
+                    .size(13)
+                    .color(Palette::accent()),
+            )
+            .on_press(docs_msg(SidebarMsg::DocsFullToggled(true)))
+            .padding(0)
+            .style(iced::widget::button::text),
+        );
+    let body = scrollable(
+        container(container(page.padding([28, 24])).max_width(700)).center_x(Length::Fill),
     )
     .height(Length::Fill)
     .style(crate::ui::theme::thin_scrollbar);
@@ -501,4 +647,17 @@ fn code_block<'a>(
             ..Default::default()
         })
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::created_label;
+
+    #[test]
+    fn created_dates_read_the_same_from_seconds_and_milliseconds() {
+        assert_eq!(created_label(0), None);
+        let seconds = created_label(1_762_400_000).unwrap();
+        assert_eq!(created_label(1_762_400_000_000), Some(seconds.clone()));
+        assert!(seconds.contains("2025"), "{seconds}");
+    }
 }

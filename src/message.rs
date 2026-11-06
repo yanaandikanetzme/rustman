@@ -49,6 +49,8 @@ pub enum SidebarMsg {
     /// A collection's documentation page.
     CollectionDocsOpened(String),
     DocsClosed,
+    /// Into the complete documentation (`true`) or back to the Overview.
+    DocsFullToggled(bool),
     DocsLangSet(crate::services::snippet::Lang),
     /// A code block's "View more" or an example's Headers tab, by key.
     DocsToggled(String),

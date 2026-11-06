@@ -16,6 +16,11 @@ pub struct CollectionDocs {
     pub name: String,
     pub lang: Lang,
     pub request_count: usize,
+    pub folder_count: usize,
+    /// As stored: milliseconds, or seconds for older imports.
+    pub created_at: i64,
+    /// The complete documentation is open; otherwise the Overview.
+    pub full: bool,
     pub sections: Vec<DocSection>,
     /// Expanded code blocks and Headers tabs, by key.
     pub expanded: HashSet<String>,

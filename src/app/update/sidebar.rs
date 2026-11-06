@@ -172,6 +172,11 @@ pub(super) fn handle(state: &mut AppState, msg: SidebarMsg) -> Task<Message> {
             crate::app::docs::open(state, &id);
         }
         SidebarMsg::DocsClosed => state.collection_docs = None,
+        SidebarMsg::DocsFullToggled(full) => {
+            if let Some(docs) = &mut state.collection_docs {
+                docs.full = full;
+            }
+        }
         SidebarMsg::DocsLangSet(lang) => {
             state.sidebar.context_menu = None;
             crate::app::docs::set_lang(state, lang);

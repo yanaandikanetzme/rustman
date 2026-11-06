@@ -192,6 +192,14 @@ fn walk(
 pub(crate) fn build(state: &AppState, collection_id: &str, lang: Lang) -> Option<CollectionDocs> {
     let collection = state.collections.iter().find(|c| c.id == collection_id)?;
     let mut sections = Vec::new();
+    let mut folder_count = 0;
+    let mut parents = vec![collection_id.to_owned()];
+    while let Some(parent) = parents.pop() {
+        for g in state.groups.iter().filter(|g| g.parent_id == parent) {
+            folder_count += 1;
+            parents.push(g.id.clone());
+        }
+    }
     walk(state, collection_id, true, None, lang, &mut sections);
     // The collection's own requests read first, like an overview.
     sections.sort_by_key(|s| s.title.is_some());
@@ -200,6 +208,9 @@ pub(crate) fn build(state: &AppState, collection_id: &str, lang: Lang) -> Option
         name: collection.name.clone(),
         lang,
         request_count: sections.iter().map(|s| s.requests.len()).sum(),
+        folder_count,
+        created_at: collection.created_at,
+        full: false,
         sections,
         expanded: Default::default(),
         chosen: Default::default(),
@@ -232,6 +243,7 @@ pub(crate) fn set_lang(state: &mut AppState, lang: Lang) {
     let mut docs = build(state, &old.collection_id, lang);
     if let Some(docs) = &mut docs {
         docs.expanded = old.expanded;
+        docs.full = old.full;
         docs.chosen = old.chosen;
     }
     state.collection_docs = docs;
@@ -273,8 +285,11 @@ mod tests {
         state.requests.insert("c".into(), vec![login, health]);
 
         open(&mut state, "c");
+        let docs = state.collection_docs.as_mut().unwrap();
+        assert!(!docs.full, "a collection opens on its Overview");
+        assert_eq!((docs.request_count, docs.folder_count), (2, 1));
+        docs.full = true;
         let docs = state.collection_docs.as_ref().unwrap();
-        assert_eq!(docs.request_count, 2);
         assert_eq!(docs.sections[0].title, None, "root requests first");
         assert_eq!(docs.sections[0].requests[0].request.name, "Health");
         assert_eq!(docs.sections[1].title.as_deref(), Some("Auth"));
@@ -289,6 +304,7 @@ mod tests {
 
         set_lang(&mut state, Lang::PythonRequests);
         let docs = state.collection_docs.as_ref().unwrap();
+        assert!(docs.full, "a language change stays in the documentation");
         assert!(docs.sections[1].requests[0].snippet.contains("requests"));
         drop(state);
         let _ = std::fs::remove_dir_all(dir);
