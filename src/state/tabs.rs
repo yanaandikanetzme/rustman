@@ -13,12 +13,57 @@ use crate::jobs::JobManager;
 
 #[derive(Debug, Default)]
 pub struct WsState {
+    /// Fresh identity per connection attempt; never persisted.
+    pub connection_id: Option<uuid::Uuid>,
     pub url: String,
     pub connected: bool,
     pub connecting: bool,
     pub draft: String,
     pub messages: Vec<WsMessage>,
+    pub dropped_messages: usize,
     pub outgoing_tx: Option<mpsc::Sender<String>>,
+}
+
+impl WsState {
+    pub fn clear_messages(&mut self) {
+        self.messages.clear();
+        self.dropped_messages = 0;
+    }
+    pub fn push_message(&mut self, mut message: WsMessage) {
+        message.text = crate::services::websocket::preview_text(&message.text);
+        self.messages.push(message);
+        let mut bytes: usize = self.messages.iter().map(|m| m.text.len()).sum();
+        while self.messages.len() > 500 || bytes > 1024 * 1024 {
+            bytes -= self.messages.remove(0).text.len();
+            self.dropped_messages = self.dropped_messages.saturating_add(1);
+        }
+    }
+}
+
+const CONSOLE_TRUNCATED: &str = "[Console output truncated; showing bounded recent output]";
+fn bounded_console_logs(logs: Vec<String>) -> Vec<String> {
+    let mut kept = Vec::new();
+    let mut bytes = 0usize;
+    let mut truncated = false;
+    for line in logs.into_iter().rev() {
+        if line == CONSOLE_TRUNCATED {
+            truncated = true;
+            continue;
+        }
+        let capped = crate::services::format::head_capped(&line, 16 * 1024);
+        truncated |= capped.len() != line.len();
+        if kept.len() >= 499 || bytes + capped.len() + 1 > 64 * 1024 - 128 {
+            truncated = true;
+            break;
+        }
+        bytes += capped.len() + 1;
+        kept.push(capped.to_owned());
+    }
+    if truncated {
+        kept.push(CONSOLE_TRUNCATED.into());
+    }
+    kept.reverse();
+    kept
 }
 
 #[derive(Debug, Clone)]
@@ -31,6 +76,199 @@ pub struct WsMessage {
 /// the response arrives (see `AppMsg::SpreadsheetPreviewReady`). `None` means
 /// either the response isn't binary, the binary type has no richer preview,
 /// or the preview hasn't finished parsing yet.
+/// Response body format, like Postman's body format menu. `Raw` shows the
+/// body exactly as received (no pretty-printing, no highlighting).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BodyLang {
+    Json,
+    Xml,
+    Html,
+    JavaScript,
+    Text,
+    Raw,
+}
+
+impl BodyLang {
+    pub const ALL: [BodyLang; 6] = [
+        BodyLang::Json,
+        BodyLang::Xml,
+        BodyLang::Html,
+        BodyLang::JavaScript,
+        BodyLang::Text,
+        BodyLang::Raw,
+    ];
+
+    pub fn syntax(self) -> &'static str {
+        match self {
+            BodyLang::Json => "json",
+            BodyLang::Xml => "xml",
+            BodyLang::Html => "html",
+            BodyLang::JavaScript => "javascript",
+            BodyLang::Text | BodyLang::Raw => "txt",
+        }
+    }
+}
+
+impl std::fmt::Display for BodyLang {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            BodyLang::Json => "JSON",
+            BodyLang::Xml => "XML",
+            BodyLang::Html => "HTML",
+            BodyLang::JavaScript => "JavaScript",
+            BodyLang::Text => "Text",
+            BodyLang::Raw => "Raw",
+        })
+    }
+}
+
+/// What an editor message does to its open autocomplete list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompletionEffect {
+    /// The text under the caret changed.
+    Refresh,
+    /// The caret or the text moved away.
+    Close,
+    Keep,
+}
+
+/// A list closes only on what moves the caret away: the editor also emits
+/// bookkeeping messages, which must not take the list from under the typist.
+pub fn completion_effect(message: &iced_code_editor::Message) -> CompletionEffect {
+    use iced_code_editor::Message as Editor;
+    match message {
+        Editor::CharacterInput(_) | Editor::ImeCommit(_) | Editor::Backspace | Editor::Delete => {
+            CompletionEffect::Refresh
+        }
+        Editor::Enter
+        | Editor::Tab
+        | Editor::ArrowKey(..)
+        | Editor::Home(_)
+        | Editor::End(_)
+        | Editor::PageUp
+        | Editor::PageDown
+        | Editor::CtrlHome
+        | Editor::CtrlEnd
+        | Editor::GotoPosition(..)
+        | Editor::MouseClick(_)
+        | Editor::DoubleClick(_)
+        | Editor::TripleClick(_)
+        | Editor::SelectAll
+        | Editor::Paste(_)
+        | Editor::Cut
+        | Editor::Undo
+        | Editor::Redo
+        | Editor::ToggleComment
+        | Editor::CanvasFocusLost => CompletionEffect::Close,
+        _ => CompletionEffect::Keep,
+    }
+}
+
+/// Scripts of both languages read fine as JavaScript.
+const SCRIPT_SYNTAX: &str = "js";
+
+/// Which script the Scripts tab shows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ScriptPhase {
+    #[default]
+    Before,
+    After,
+}
+
+/// The body `{{variable}}` under the mouse, in the editor's viewport pixels.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BodyHover {
+    pub name: String,
+    pub point: iced::Point,
+}
+
+/// Where a variable card hangs from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum VarCardAnchor {
+    /// A body token's rectangle, in the editor's viewport pixels.
+    Body(iced::Rectangle),
+    /// A Headers table cell.
+    Header(usize, SuggestField),
+}
+
+/// Open variable card. It closes when the mouse leaves unless clicked
+/// (`pinned`). `mask_all`: the cell is a sensitive header's value, so every
+/// variable in it starts masked whatever its name.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VarCard {
+    pub names: Vec<String>,
+    pub anchor: VarCardAnchor,
+    pub mask_all: bool,
+    pub over_card: bool,
+    pub pinned: bool,
+    pub revealed: bool,
+    pub copied: Option<String>,
+}
+
+/// The body editor's `{{` autocomplete: its rows and the token around the
+/// caret, as chars to remove on either side when one is picked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BodyCompletion {
+    pub items: Vec<crate::services::header_suggest::Suggestion>,
+    pub selected: usize,
+    pub back: usize,
+    pub forward: usize,
+}
+
+/// Which cell of the Headers or Params table an autocomplete list or a
+/// variable card belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SuggestField {
+    Key,
+    Value,
+    ParamKey,
+    ParamValue,
+    /// An Auth field; its row is always 0.
+    Auth(AuthField),
+}
+
+/// An Auth field that can hold `{{variables}}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AuthField {
+    Bearer,
+    BasicUser,
+    BasicPass,
+    ApiKeyName,
+    ApiKeyValue,
+    Cookie,
+    JwtSubject,
+    JwtSecret,
+}
+
+impl AuthField {
+    pub const ALL: [Self; 8] = [
+        Self::Bearer,
+        Self::BasicUser,
+        Self::BasicPass,
+        Self::ApiKeyName,
+        Self::ApiKeyValue,
+        Self::Cookie,
+        Self::JwtSubject,
+        Self::JwtSecret,
+    ];
+
+    /// Typed text in it is a credential and shows masked.
+    pub fn secret(self) -> bool {
+        matches!(
+            self,
+            Self::Bearer | Self::BasicPass | Self::ApiKeyValue | Self::Cookie | Self::JwtSecret
+        )
+    }
+}
+
+/// The Headers cell whose autocomplete list is open, and its highlighted row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeaderSuggest {
+    pub row: usize,
+    pub field: SuggestField,
+    pub selected: usize,
+}
+
 #[derive(Default)]
 pub enum ResponsePreview {
     #[default]
@@ -45,6 +283,16 @@ pub struct TestResult {
     pub passed: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct UrlVariableDraft {
+    pub key: String,
+    pub value: String,
+    pub environment_id: Option<String>,
+    pub environment_name: String,
+    pub environments: Vec<(String, String)>,
+    pub error: Option<String>,
+}
+
 pub struct RequestTabState {
     pub id: String,
     pub title: String,
@@ -57,6 +305,35 @@ pub struct RequestTabState {
     /// canonical value — every writer goes through `set_url` so the two can
     /// never disagree.
     pub url_editor: text_editor::Content,
+    /// One-line editors of the Headers and Params cells and the Auth
+    /// fields, which colour `{{variables}}` like the URL bar. Kept in step
+    /// by [`Self::sync_field_editors`].
+    pub field_editors: std::collections::HashMap<(usize, SuggestField), text_editor::Content>,
+    pub url_hover: Option<String>,
+    pub url_variable_draft: Option<UrlVariableDraft>,
+    pub url_completion_open: bool,
+    pub url_completion_selected: usize,
+    /// Open autocomplete list of a Headers cell (Postman-style).
+    pub header_suggest: Option<HeaderSuggest>,
+    /// `{{variable}}` under the mouse in the body editor, for its hover card.
+    pub body_hover: Option<BodyHover>,
+    /// The variable card the mouse can reach, opened after a hover delay.
+    pub var_card: Option<VarCard>,
+    /// A selection drag is running in the body editor: no card may open
+    /// under the mouse and take its events.
+    pub body_dragging: bool,
+    /// Where the mouse is over the body editor, in viewport pixels.
+    pub body_pointer: Option<iced::Point>,
+    /// A press in the body editor that can still become a click: the pointer
+    /// then, and the press as the editor reported it.
+    pub body_press: Option<(iced::Point, iced::Point)>,
+    /// The Headers cell under the mouse.
+    pub header_hover: Option<(usize, SuggestField)>,
+    /// `{{variable}}` tokens of the body, marked over the editor. Refreshed on
+    /// every body change so the view never copies the buffer.
+    pub body_vars: Vec<crate::services::variables::VarToken>,
+    /// Open `{{` autocomplete list of the body editor.
+    pub body_completion: Option<BodyCompletion>,
     pub headers: Vec<KeyValue>,
     pub params: Vec<KeyValue>,
     pub body_type: BodyType,
@@ -83,6 +360,11 @@ pub struct RequestTabState {
     pub jwt_secret: String,
     pub jwt_subject: String,
     pub jwt_algo: String,
+    /// The request being sent, for the Console once its response arrives.
+    pub console_request: Option<crate::state::console::ConsoleRequest>,
+    pub script_phase: ScriptPhase,
+    /// Open autocomplete of the shown script editor.
+    pub script_completion: Option<BodyCompletion>,
     pub pre_request_editor: CodeEditor,
     pub test_editor: CodeEditor,
     pub active_request_tab: crate::message::RequestTab,
@@ -107,9 +389,24 @@ pub struct RequestTabState {
     /// Readable-text rendering of an HTML body (`None` for non-HTML).
     /// Set alongside the viewer content; cleared on every new response.
     pub html_fallback_text: Option<String>,
+    /// Preview blocks of an HTML body (coloured dump blocks + readable
+    /// text). Empty for non-HTML; refreshed with `html_fallback_text`.
+    pub html_blocks: Vec<crate::services::html_preview::Block>,
+    /// Paths of the expanded rows in the JSON preview table. Cleared on
+    /// every new response.
+    pub json_open: std::collections::HashSet<String>,
+    /// Masked response Headers/Cookies values shown for now; a new
+    /// response hides them again.
+    pub revealed_response: std::collections::HashSet<String>,
     /// Currently shown page into `viewer_page_starts`.
     pub viewer_page: usize,
     pub viewer_full_is_json: bool,
+    /// Body format picked in the response toolbar; `None` = detect from
+    /// the response. Reset on every new response.
+    pub body_lang: Option<BodyLang>,
+    /// Preview (rendered HTML as readable text) on/off; `None` = on for
+    /// HTML responses. Reset on every new response.
+    pub body_preview: Option<bool>,
     pub viewer_processing: bool,
     pub parsed_json: Option<serde_json::Value>,
     pub response_preview: ResponsePreview,
@@ -146,6 +443,7 @@ pub enum EditKind {
     Url,
     HeaderKey(usize),
     HeaderValue(usize),
+    HeaderDescription(usize),
     ParamKey(usize),
     ParamValue(usize),
     HeadersBulk,
@@ -190,6 +488,20 @@ impl RequestTabState {
             method: HttpMethod::Get,
             url: String::new(),
             url_editor: text_editor::Content::new(),
+            field_editors: std::collections::HashMap::new(),
+            url_hover: None,
+            url_variable_draft: None,
+            url_completion_open: false,
+            url_completion_selected: 0,
+            header_suggest: None,
+            body_hover: None,
+            var_card: None,
+            body_dragging: false,
+            body_pointer: None,
+            body_press: None,
+            header_hover: None,
+            body_vars: Vec::new(),
+            body_completion: None,
             headers: Vec::new(),
             params: Vec::new(),
             body_type: BodyType::None,
@@ -209,8 +521,11 @@ impl RequestTabState {
             jwt_secret: String::new(),
             jwt_subject: String::new(),
             jwt_algo: "HS256".to_owned(),
-            pre_request_editor: make_code_editor("", "txt"),
-            test_editor: make_code_editor("", "txt"),
+            console_request: None,
+            script_phase: ScriptPhase::default(),
+            script_completion: None,
+            pre_request_editor: make_code_editor("", SCRIPT_SYNTAX),
+            test_editor: make_code_editor("", SCRIPT_SYNTAX),
             active_request_tab: crate::message::RequestTab::Params,
             active_response_tab: crate::message::ResponseTab::Body,
             ws: WsState::default(),
@@ -224,8 +539,13 @@ impl RequestTabState {
             viewer_full: String::new(),
             viewer_page_starts: Vec::new(),
             html_fallback_text: None,
+            html_blocks: Vec::new(),
+            json_open: std::collections::HashSet::new(),
+            revealed_response: std::collections::HashSet::new(),
             viewer_page: 0,
             viewer_full_is_json: false,
+            body_lang: None,
+            body_preview: None,
             viewer_processing: false,
             parsed_json: None,
             response_preview: ResponsePreview::default(),
@@ -249,6 +569,9 @@ impl RequestTabState {
     /// is correct there. Per-keystroke typing must NOT go through here: it
     /// performs into the existing editor so the cursor survives.
     pub fn set_url(&mut self, url: String) {
+        self.url_hover = None;
+        self.url_variable_draft = None;
+        self.url_completion_open = false;
         self.url = url;
         self.url_editor = text_editor::Content::with_text(&self.url);
     }
@@ -305,15 +628,16 @@ impl RequestTabState {
 
     /// Replaces `script_logs` wholesale and rebuilds `console_editor` to match.
     pub fn set_script_logs(&mut self, logs: Vec<String>) {
-        self.console_editor = text_editor::Content::with_text(&logs.join("\n"));
-        self.script_logs = logs;
+        self.script_logs = bounded_console_logs(logs);
+        self.console_editor = text_editor::Content::with_text(&self.script_logs.join("\n"));
     }
 
     /// Appends to `script_logs` (e.g. a test script's logs on top of a
     /// pre-request script's) and rebuilds `console_editor` to match.
     pub fn extend_script_logs(&mut self, logs: Vec<String>) {
-        self.script_logs.extend(logs);
-        self.console_editor = text_editor::Content::with_text(&self.script_logs.join("\n"));
+        let mut combined = std::mem::take(&mut self.script_logs);
+        combined.extend(logs);
+        self.set_script_logs(combined);
     }
 
     pub fn set_viewer_content(&mut self, text: &str, is_json: bool) {
@@ -332,6 +656,280 @@ impl RequestTabState {
         self.viewer_page_starts = page_starts(&self.viewer_full);
         self.viewer_page = 0;
         self.show_viewer_page(0);
+    }
+
+    /// The body format in effect: the toolbar pick, else detected from the
+    /// response (parsed JSON, then the Content-Type).
+    pub fn body_lang(&self) -> BodyLang {
+        if let Some(lang) = self.body_lang {
+            return lang;
+        }
+        if self.viewer_full_is_json {
+            return BodyLang::Json;
+        }
+        let ct = self
+            .response
+            .as_ref()
+            .and_then(|r| {
+                r.headers
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+                    .map(|(_, v)| v.to_ascii_lowercase())
+            })
+            .unwrap_or_default();
+        if ct.contains("html") {
+            BodyLang::Html
+        } else if ct.contains("xml") {
+            BodyLang::Xml
+        } else if ct.contains("javascript") {
+            BodyLang::JavaScript
+        } else {
+            BodyLang::Text
+        }
+    }
+
+    /// The script editor the Scripts tab shows.
+    pub fn script_editor(&self) -> &CodeEditor {
+        match self.script_phase {
+            ScriptPhase::Before => &self.pre_request_editor,
+            ScriptPhase::After => &self.test_editor,
+        }
+    }
+
+    pub fn script_editor_mut(&mut self) -> &mut CodeEditor {
+        match self.script_phase {
+            ScriptPhase::Before => &mut self.pre_request_editor,
+            ScriptPhase::After => &mut self.test_editor,
+        }
+    }
+
+    /// Open, update or close the script autocomplete for the caret's word.
+    pub fn refresh_script_completion(&mut self) {
+        use crate::services::header_suggest::{Source, Suggestion};
+        let editor = self.script_editor();
+        let (line_no, column) = editor.cursor_position();
+        let content = editor.content();
+        self.script_completion = content
+            .lines()
+            .chain(content.is_empty().then_some(""))
+            .nth(line_no)
+            .and_then(|line| crate::services::pm_script::completions_at(line, column, &content))
+            .map(|(list, back)| BodyCompletion {
+                items: list
+                    .into_iter()
+                    .map(|(label, detail)| Suggestion {
+                        apply: label.clone(),
+                        label,
+                        source: Source::Plain,
+                        detail,
+                    })
+                    .collect(),
+                selected: 0,
+                back,
+                forward: 0,
+            });
+    }
+
+    /// Forget the response and everything derived from it. The test results
+    /// describe that response, so they go too; the request is untouched.
+    pub fn clear_response(&mut self) {
+        self.response = None;
+        self.parsed_json = None;
+        self.json_open.clear();
+        self.revealed_response.clear();
+        self.body_lang = None;
+        self.body_preview = None;
+        self.response_preview = ResponsePreview::None;
+        self.test_results.clear();
+        self.script_error = None;
+        self.viewer_processing = false;
+        self.set_viewer_content("", false);
+        self.refresh_html_preview();
+    }
+
+    /// Whether Preview is shown instead of the source. HTML (e.g. a Laravel
+    /// `dd()` page) opens in Preview; JSON opens pretty-printed, like Postman.
+    pub fn body_preview_on(&self) -> bool {
+        if self.html_fallback_text.is_some() {
+            return self.body_preview.unwrap_or(true);
+        }
+        self.json_previewable() && self.body_preview.unwrap_or(false)
+    }
+
+    /// Suggestions for the Headers cell whose list is open. Empty when the
+    /// cell is gone (row removed) or too large to edit inline.
+    pub fn header_suggestions(
+        &self,
+        env: Option<&crate::domain::environment::AppEnvironment>,
+    ) -> Vec<crate::services::header_suggest::Suggestion> {
+        use crate::services::header_suggest as hs;
+        let Some(s) = self.header_suggest else {
+            return Vec::new();
+        };
+        if !matches!(s.field, SuggestField::Key | SuggestField::Value) {
+            let Some(text) = self.field_text(s.row, s.field) else {
+                return Vec::new();
+            };
+            return hs::variables(text, env).unwrap_or_default();
+        }
+        let Some(h) = self.headers.get(s.row) else {
+            return Vec::new();
+        };
+        let text = match s.field {
+            SuggestField::Key => &h.key,
+            _ => &h.value,
+        };
+        if !crate::ui::request::cell::is_inline(text) {
+            return Vec::new();
+        }
+        match s.field {
+            SuggestField::Key => {
+                let used: Vec<&str> = self
+                    .headers
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != s.row)
+                    .map(|(_, h)| h.key.as_str())
+                    .collect();
+                hs::for_key(&h.key, &used, env)
+            }
+            _ => hs::for_value(&h.key, &h.value, env),
+        }
+    }
+
+    /// The text of a Headers or Params cell, or of an Auth field.
+    pub fn field_text(&self, row: usize, field: SuggestField) -> Option<&str> {
+        Some(match field {
+            SuggestField::Key => &self.headers.get(row)?.key,
+            SuggestField::Value => &self.headers.get(row)?.value,
+            SuggestField::ParamKey => &self.params.get(row)?.key,
+            SuggestField::ParamValue => &self.params.get(row)?.value,
+            SuggestField::Auth(field) => match field {
+                AuthField::Bearer => &self.bearer_token,
+                AuthField::BasicUser => &self.basic_user,
+                AuthField::BasicPass => &self.basic_pass,
+                AuthField::ApiKeyName => &self.api_key_name,
+                AuthField::ApiKeyValue => &self.api_key_value,
+                AuthField::Cookie => &self.cookie_string,
+                AuthField::JwtSubject => &self.jwt_subject,
+                AuthField::JwtSecret => &self.jwt_secret,
+            },
+        })
+    }
+
+    /// Typed text in the field is a credential: the value of a header or
+    /// param whose key is sensitive (or a variable, which could name one),
+    /// or a secret Auth field (the password unless its eye is open). A typed
+    /// Authorization header is an ordinary field: it carries custom schemes
+    /// that have to stay readable while they are written.
+    pub fn field_secret(&self, row: usize, field: SuggestField) -> bool {
+        let secret_key =
+            |key: &str| crate::services::variables::sensitive(key) || key.contains("{{");
+        match field {
+            SuggestField::Value => self.headers.get(row).is_some_and(|h| {
+                !h.key.trim().eq_ignore_ascii_case("authorization") && secret_key(&h.key)
+            }),
+            SuggestField::ParamValue => self.params.get(row).is_some_and(|p| secret_key(&p.key)),
+            SuggestField::Auth(AuthField::BasicPass) => !self.show_basic_pass,
+            SuggestField::Auth(field) => field.secret(),
+            _ => false,
+        }
+    }
+
+    /// Whether the field is drawn as its variable-colouring editor rather
+    /// than a plain input. A secret field becomes one only while it is a
+    /// single `{{reference}}` (or one being typed): the name is then all
+    /// that is on screen. Literal text around a reference stays masked.
+    pub fn shows_editor(&self, row: usize, field: SuggestField) -> bool {
+        let Some(text) = self.field_text(row, field) else {
+            return false;
+        };
+        self.field_editors.contains_key(&(row, field))
+            && (!self.field_secret(row, field) || crate::services::variables::template_input(text))
+    }
+
+    /// Keep every field's editor holding the field's text. An editor is only
+    /// rebuilt when its text changed elsewhere (a pick, undo, a sync, a row
+    /// removed above it), so the caret survives typing.
+    pub fn sync_field_editors(&mut self) {
+        let mut ids: Vec<(usize, SuggestField)> = Vec::new();
+        for row in 0..self.headers.len() {
+            ids.push((row, SuggestField::Key));
+            ids.push((row, SuggestField::Value));
+        }
+        for row in 0..self.params.len() {
+            ids.push((row, SuggestField::ParamKey));
+            ids.push((row, SuggestField::ParamValue));
+        }
+        ids.extend(AuthField::ALL.map(|f| (0, SuggestField::Auth(f))));
+        let mut old = std::mem::take(&mut self.field_editors);
+        let mut kept = std::collections::HashMap::with_capacity(ids.len());
+        for id in ids {
+            let Some(text) = self.field_text(id.0, id.1) else {
+                continue;
+            };
+            if !crate::ui::request::cell::is_inline(text) {
+                continue;
+            }
+            let editor = match old.remove(&id) {
+                Some(editor) if editor.text() == text => editor,
+                _ => {
+                    let mut editor = text_editor::Content::with_text(text);
+                    editor.perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
+                    editor
+                }
+            };
+            kept.insert(id, editor);
+        }
+        self.field_editors = kept;
+    }
+
+    /// Whether the toolbar offers Preview for the current response.
+    pub fn preview_available(&self) -> bool {
+        self.html_fallback_text.is_some() || self.json_previewable()
+    }
+
+    /// A JSON object or array body can be shown as Postman's key/value table.
+    pub fn json_previewable(&self) -> bool {
+        matches!(
+            &self.parsed_json,
+            Some(serde_json::Value::Object(m)) if !m.is_empty()
+        ) || matches!(
+            &self.parsed_json,
+            Some(serde_json::Value::Array(a)) if !a.is_empty()
+        )
+    }
+
+    /// Recompute the HTML preview (readable text + dump blocks) from the
+    /// current response. Called whenever the viewer content is refilled.
+    pub fn refresh_html_preview(&mut self) {
+        self.html_fallback_text = self
+            .response
+            .as_ref()
+            .and_then(crate::services::format::html_preview_text);
+        self.html_blocks = match (&self.html_fallback_text, &self.response) {
+            (Some(_), Some(resp)) => crate::services::html_preview::blocks(&resp.body),
+            _ => Vec::new(),
+        };
+    }
+
+    /// Re-fill the viewer for a toolbar format pick: `Raw` shows the body as
+    /// received; anything else pretty-prints when the body is JSON.
+    pub fn set_body_lang(&mut self, lang: BodyLang) {
+        self.body_lang = Some(lang);
+        let Some(body) = self.response.as_ref().map(|r| r.body.clone()) else {
+            return;
+        };
+        let pretty = (lang != BodyLang::Raw)
+            .then(|| {
+                self.parsed_json
+                    .as_ref()
+                    .and_then(|v| crate::services::format::pretty_value(v, self.body_indent_tabs))
+            })
+            .flatten();
+        let is_json = pretty.is_some();
+        let text = pretty.unwrap_or(body);
+        self.set_viewer_content(&text, is_json);
     }
 
     /// Number of viewer pages for the current body (1 when it fits a page).
@@ -372,13 +970,12 @@ impl RequestTabState {
             None
         };
         self.response_viewer_lines = lines;
-        let syntax = if self.viewer_full_is_json {
-            "json"
-        } else {
-            "txt"
-        };
+        let syntax = self.body_lang().syntax();
+        // A new page or body keeps the wrap choice of the toolbar toggle.
+        let wrap = self.response_editor.wrap_enabled();
         self.response_editor = make_code_editor(&display, syntax);
         self.response_editor.set_show_whitespace(false);
+        self.response_editor.set_wrap_enabled(wrap);
     }
 
     /// Toggle the expanded editor for form field `index`. Expanding computes
@@ -441,6 +1038,50 @@ impl RequestTabState {
         self.response_editor.content().len()
     }
 
+    /// Re-scan the body for `{{variable}}` tokens. Huge bodies are skipped:
+    /// the scan copies the buffer and they are rarely hand-edited templates.
+    pub fn refresh_body_vars(&mut self) {
+        const MAX_BYTES: usize = 1024 * 1024;
+        let content = self.body_editor.content();
+        self.body_vars = if content.len() > MAX_BYTES {
+            Vec::new()
+        } else {
+            crate::services::variables::variable_tokens(&content)
+        };
+    }
+
+    /// Open, update or close the `{{` list for the caret's current token.
+    pub fn refresh_body_completion(
+        &mut self,
+        env: Option<&crate::domain::environment::AppEnvironment>,
+    ) {
+        self.body_completion = self.body_completion_at_caret(env);
+    }
+
+    fn body_completion_at_caret(
+        &self,
+        env: Option<&crate::domain::environment::AppEnvironment>,
+    ) -> Option<BodyCompletion> {
+        let (line_no, col) = self.body_editor.cursor_position();
+        let content = self.body_editor.content();
+        let line = content.lines().nth(line_no)?;
+        let caret = line
+            .char_indices()
+            .nth(col)
+            .map_or(line.len(), |(byte, _)| byte);
+        let (range, query) = crate::services::variables::completion(line, caret)?;
+        let items = crate::services::header_suggest::variable_list(query, env, "");
+        if items.is_empty() {
+            return None;
+        }
+        Some(BodyCompletion {
+            items,
+            selected: 0,
+            back: line[range.start..caret].chars().count(),
+            forward: line[caret..range.end].chars().count(),
+        })
+    }
+
     pub fn reset_body_editor(&mut self, text: &str) {
         let syntax = body_syntax_for(&self.body_type, text);
         let indent = if self.body_indent_tabs {
@@ -451,6 +1092,9 @@ impl RequestTabState {
         let mut ed = make_code_editor(text, syntax);
         ed.set_indent_style(indent);
         self.body_editor = ed;
+        self.refresh_body_vars();
+        self.body_completion = None;
+        self.var_card = None;
     }
 
     /// Replace the whole body through the editor's edit history (select-all +
@@ -470,8 +1114,13 @@ impl RequestTabState {
         let _ = self
             .body_editor
             .update(&iced_code_editor::Message::SelectAll);
-        self.body_editor
-            .update(&iced_code_editor::Message::Paste(text))
+        let task = self
+            .body_editor
+            .update(&iced_code_editor::Message::Paste(text));
+        self.refresh_body_vars();
+        self.body_completion = None;
+        self.var_card = None;
+        task
     }
 
     /// Re-applies the current palette to **every** code editor this tab owns.
@@ -524,6 +1173,9 @@ impl RequestTabState {
         if self.body_type != req.body_type || self.body_editor.content() != req.body {
             self.body_editor =
                 make_code_editor(&req.body, body_syntax_for(&req.body_type, &req.body));
+            self.refresh_body_vars();
+            self.body_completion = None;
+            self.var_card = None;
         }
         self.body_type = req.body_type.clone();
         if self.graphql_variables_editor.content() != req.graphql_variables {
@@ -543,10 +1195,10 @@ impl RequestTabState {
         self.jwt_subject = req.jwt_subject.clone();
         self.jwt_algo = req.jwt_algo.clone();
         if self.pre_request_editor.content() != req.pre_request_script {
-            self.pre_request_editor = make_code_editor(&req.pre_request_script, "txt");
+            self.pre_request_editor = make_code_editor(&req.pre_request_script, SCRIPT_SYNTAX);
         }
         if self.test_editor.content() != req.test_script {
-            self.test_editor = make_code_editor(&req.test_script, "txt");
+            self.test_editor = make_code_editor(&req.test_script, SCRIPT_SYNTAX);
         }
         self.saved_as = Some((req.collection_id.clone(), req.id.clone()));
     }
@@ -654,6 +1306,11 @@ impl FormValueEditor {
     /// The editor rendering the current page.
     pub fn editor(&self) -> &CodeEditor {
         &self.editor
+    }
+
+    pub fn sync_theme(&mut self) {
+        self.editor
+            .set_theme(crate::ui::theme::Palette::code_editor_style());
     }
 
     /// Forward an editor event, writing content edits back into the field
@@ -868,13 +1525,30 @@ pub fn make_code_editor(content: &str, syntax: &str) -> CodeEditor {
 pub struct TabManager {
     pub tabs: Vec<RequestTabState>,
     pub active: usize,
+    /// Saved requests whose tab was closed this session, newest first
+    /// (tab list menu "Recently closed"). Unsaved tabs have nothing to
+    /// reopen, so they are not kept. Not persisted.
+    pub recently_closed: Vec<ClosedTab>,
 }
+
+/// A closed tab of a saved request, enough to list and reopen it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClosedTab {
+    pub collection_id: String,
+    pub request_id: String,
+    pub method: crate::domain::request::HttpMethod,
+    pub title: String,
+}
+
+/// How many closed tabs the tab list remembers.
+pub const RECENTLY_CLOSED_MAX: usize = 10;
 
 impl Default for TabManager {
     fn default() -> Self {
         Self {
             tabs: vec![RequestTabState::new()],
             active: 0,
+            recently_closed: Vec::new(),
         }
     }
 }
@@ -894,6 +1568,20 @@ impl TabManager {
     }
 
     pub fn close_tab(&mut self, idx: usize) {
+        if let Some(tab) = self.tabs.get(idx)
+            && let Some((col, req)) = &tab.saved_as
+        {
+            let closed = ClosedTab {
+                collection_id: col.clone(),
+                request_id: req.clone(),
+                method: tab.method.clone(),
+                title: tab.title.clone(),
+            };
+            self.recently_closed
+                .retain(|c| c.request_id != closed.request_id);
+            self.recently_closed.insert(0, closed);
+            self.recently_closed.truncate(RECENTLY_CLOSED_MAX);
+        }
         if self.tabs.len() == 1 {
             self.tabs[0] = RequestTabState::new();
             return;
@@ -1178,6 +1866,54 @@ mod viewer_page_tests {
     }
 
     #[test]
+    fn body_format_detects_and_raw_shows_the_body_as_received() {
+        let mut tab = RequestTabState::new();
+        tab.response = Some(HttpResponse {
+            status: 200,
+            body: "{\"a\":1}".into(),
+            headers: vec![("Content-Type".into(), "application/json".into())]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        });
+        tab.parsed_json = Some(serde_json::json!({"a": 1}));
+        tab.set_viewer_content("{\n  \"a\": 1\n}", true);
+        assert_eq!(tab.body_lang(), BodyLang::Json);
+        tab.set_body_lang(BodyLang::Raw);
+        assert_eq!(tab.viewer_full, "{\"a\":1}");
+        tab.set_body_lang(BodyLang::Json);
+        assert_eq!(tab.viewer_full, "{\n  \"a\": 1\n}");
+
+        // HTML (e.g. a Laravel dd() page) opens in Preview by default.
+        let mut html = RequestTabState::new();
+        html.response = Some(HttpResponse {
+            status: 200,
+            body: "<pre>x</pre>".into(),
+            headers: vec![("content-type".into(), "text/html; charset=UTF-8".into())]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        });
+        html.set_viewer_content("<pre>x</pre>", false);
+        html.html_fallback_text = Some("x".into());
+        assert_eq!(html.body_lang(), BodyLang::Html);
+        assert!(html.body_preview_on());
+        html.body_preview = Some(false);
+        assert!(!html.body_preview_on());
+
+        // JSON offers Preview (Postman's table) but opens pretty-printed.
+        assert!(tab.preview_available());
+        assert!(!tab.body_preview_on());
+        tab.body_preview = Some(true);
+        assert!(tab.body_preview_on());
+        // Scalars and empty containers have no table to show.
+        tab.parsed_json = Some(serde_json::json!({}));
+        assert!(!tab.preview_available());
+        tab.parsed_json = Some(serde_json::json!(5));
+        assert!(!tab.body_preview_on());
+    }
+
+    #[test]
     fn set_viewer_content_pages_and_navigates() {
         let mut tab = RequestTabState::new();
 
@@ -1220,6 +1956,7 @@ mod viewer_page_tests {
             enabled: true,
             file_name: None,
             file_data: None,
+            description: String::new(),
             mime_type: None,
         });
 
@@ -1359,5 +2096,96 @@ mod session_round_trip_tests {
     fn crlf_body_survives_session_round_trip() {
         let raw = "{\r\n  \"a\": 1\r\n}";
         assert_eq!(restore(raw), raw);
+    }
+}
+
+#[cfg(test)]
+mod recently_closed_tests {
+    use super::*;
+
+    fn saved_tab(req: &str) -> RequestTabState {
+        let mut t = RequestTabState::new();
+        t.title = format!("Req {req}");
+        t.saved_as = Some(("col".into(), req.into()));
+        t
+    }
+
+    #[test]
+    fn closing_saved_tabs_keeps_newest_first_without_duplicates() {
+        let mut m = TabManager::default();
+        m.tabs = vec![saved_tab("a"), saved_tab("b"), RequestTabState::new()];
+        m.close_tab(2); // unsaved: nothing to reopen
+        assert!(m.recently_closed.is_empty());
+        m.close_tab(0);
+        m.tabs.push(saved_tab("a"));
+        m.close_tab(1);
+        m.close_tab(0);
+        let ids: Vec<_> = m
+            .recently_closed
+            .iter()
+            .map(|c| c.request_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["b", "a"]);
+    }
+
+    #[test]
+    fn recently_closed_is_capped() {
+        let mut m = TabManager::default();
+        for i in 0..(RECENTLY_CLOSED_MAX + 3) {
+            m.tabs = vec![saved_tab(&i.to_string()), RequestTabState::new()];
+            m.close_tab(0);
+        }
+        assert_eq!(m.recently_closed.len(), RECENTLY_CLOSED_MAX);
+        assert_eq!(
+            m.recently_closed[0].request_id,
+            (RECENTLY_CLOSED_MAX + 2).to_string()
+        );
+    }
+}
+
+#[cfg(test)]
+mod security_console_tests {
+    use super::*;
+    #[test]
+    fn security_console_visible_content_is_bounded() {
+        let mut tab = RequestTabState::new();
+        tab.set_script_logs(vec!["x".repeat(200_000)]);
+        assert!(tab.console_editor.text().len() <= 64 * 1024);
+        assert!(tab.script_logs.iter().map(|s| s.len()).sum::<usize>() <= 64 * 1024);
+        for _ in 0..1100 {
+            tab.extend_script_logs(vec!["synthetic-log".into()]);
+        }
+        assert!(tab.script_logs.len() <= 500);
+        assert!(tab.console_editor.text().len() <= 64 * 1024);
+    }
+}
+
+#[cfg(test)]
+mod clear_response_tests {
+    use super::*;
+
+    #[test]
+    fn clear_response_drops_the_body_and_keeps_the_request() {
+        let mut tab = RequestTabState::new();
+        tab.url = "https://example.test".into();
+        tab.response = Some(crate::domain::response::HttpResponse {
+            status: 200,
+            body: "<pre>x</pre>".into(),
+            ..Default::default()
+        });
+        tab.set_viewer_content("<pre>x</pre>", false);
+        tab.refresh_html_preview();
+        tab.body_preview = Some(true);
+        tab.json_open.insert("a".into());
+
+        tab.clear_response();
+
+        assert!(tab.response.is_none());
+        assert!(tab.viewer_full.is_empty());
+        assert!(tab.html_blocks.is_empty());
+        assert!(tab.html_fallback_text.is_none());
+        assert!(tab.json_open.is_empty());
+        assert_eq!(tab.body_preview, None);
+        assert_eq!(tab.url, "https://example.test");
     }
 }

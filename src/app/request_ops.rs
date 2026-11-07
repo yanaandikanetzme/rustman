@@ -40,6 +40,7 @@ pub(crate) fn format_body(
 /// shape either script slot's failure produces, just labeled so the user
 /// can tell which one broke.
 fn fail_pre_request(state: &mut AppState, label: &str, err: String) {
+    state.console.log(format!("{label} error: {err}"), true);
     let tab = state.tabs.active_tab_mut();
     tab.script_error = Some(format!("{label} error: {err}"));
     tab.response = Some(crate::domain::response::HttpResponse {
@@ -119,6 +120,7 @@ pub(crate) fn send_request(state: &mut AppState) -> Task<Message> {
             key,
             value,
             enabled: true,
+            description: String::new(),
         });
     }
 
@@ -153,6 +155,7 @@ pub(crate) fn send_request(state: &mut AppState) -> Task<Message> {
     };
 
     let tab_id = tab.id.clone();
+    super::console::capture_request(state, &req, active_env.as_ref());
     let client = state.http().clone();
     let default_timeout_ms = state.default_timeout_ms;
 
@@ -189,7 +192,8 @@ pub(crate) fn save_request(state: &mut AppState) -> Task<Message> {
             match crate::app::drafts::save_draft(state, req) {
                 Ok(()) => {
                     state.tabs.active_tab_mut().modified = false;
-                    state.status_message = Some("Saved as local draft (only you see it)".to_owned());
+                    state.status_message =
+                        Some("Saved as local draft (only you see it)".to_owned());
                 }
                 Err(e) => state.status_message = Some(format!("Could not save draft: {e}")),
             }

@@ -13,9 +13,18 @@ use crate::{
     },
 };
 
+/// Mockup `.methoddd`: fixed 115px method column.
+const METHOD_W: f32 = 115.0;
+/// Mockup `.url`: 12px either side of the URL text.
+const URL_PAD_X: f32 = 12.0;
+/// Popup key for the Send split menu (shares the app-wide context-menu slot,
+/// so any outside click closes it like the sidebar menus).
+pub const SEND_MENU: &str = "request:send";
+
 pub fn view<'a>(
     tab: &'a RequestTabState,
     env: Option<&'a crate::domain::environment::AppEnvironment>,
+    send_menu_open: bool,
 ) -> Element<'a, Message> {
     // A ws:// or wss:// URL is not an HTTP request: there is no method, no
     // cURL export and no variable-expansion preview for it. Decided up front so
@@ -34,18 +43,64 @@ pub fn view<'a>(
     let method_picker = pick_list(methods, Some(tab.method.as_str()), |m| {
         Message::Request(RequestMsg::MethodChanged(m.to_owned()))
     })
-    .width(100)
-    .text_size(TEXT_MD)
-    .padding([6, 8])
-    .style(move |_theme, _status| iced::widget::pick_list::Style {
+    .width(METHOD_W)
+    .text_size(11)
+    // Exactly the pill's inner height (40 − 2×1px border = 14 + 2×12), so
+    // the bg-2 column fills it edge to edge instead of leaving bands of the
+    // pill colour above and below.
+    .text_line_height(iced::Pixels(14.0))
+    .padding([12, 10])
+    .font(crate::ui::theme::MONO)
+    .handle(iced::widget::pick_list::Handle::Static(
+        iced::widget::pick_list::Icon {
+            font: icons::ICON_FONT,
+            code_point: '\u{e06d}', // chevron-down
+            size: Some(iced::Pixels(10.0)),
+            line_height: iced_core::text::LineHeight::default(),
+            shaping: iced_core::text::Shaping::Basic,
+        },
+    ))
+    .style(move |_theme, status| iced::widget::pick_list::Style {
         text_color: color,
         placeholder_color: Palette::text_subtle(),
-        handle_color: Palette::text_muted(),
-        background: Background::Color(Color::TRANSPARENT),
+        handle_color: Palette::text_subtle(),
+        // `.methoddd summary`: bg-2, a step darker on hover, bg-0 while open.
+        // No ring: inside the pill it read as a second, misaligned border.
+        background: Background::Color(match status {
+            iced::widget::pick_list::Status::Hovered => Palette::border(),
+            iced::widget::pick_list::Status::Opened { .. } => Palette::surface(),
+            _ => Palette::surface_high(),
+        }),
         border: Border {
             color: Color::TRANSPARENT,
             width: 0.0,
-            radius: 0.0.into(),
+            radius: iced::border::Radius {
+                top_left: 4.0,
+                top_right: 0.0,
+                bottom_right: 0.0,
+                bottom_left: 4.0,
+            },
+        },
+    })
+    // `.combo-menu`: bg-0 card, bd-2 border, 6px radius, soft shadow; the
+    // current method sits on bg-2 instead of iced's default cyan.
+    .menu_style(|_theme| iced::overlay::menu::Style {
+        background: Background::Color(Palette::surface()),
+        border: Border {
+            color: Palette::border(),
+            width: 1.0,
+            radius: 6.0.into(),
+        },
+        text_color: Palette::text(),
+        selected_text_color: Palette::text(),
+        selected_background: Background::Color(Palette::surface_high()),
+        shadow: iced::Shadow {
+            color: Color {
+                a: 0.16,
+                ..Color::BLACK
+            },
+            offset: Vector::new(0.0, 8.0),
+            blur_radius: 24.0,
         },
     });
 
@@ -54,40 +109,14 @@ pub fn view<'a>(
     // Unlike the old single-line input it never shapes megabytes on paste:
     // huge pastes route to import before they can enter the widget, which is
     // what keeps Ctrl+V instant no matter the size.
-    let url_input = url_field(tab);
+    let url_input = url_field(tab, env);
 
-    let inner_divider =
-        container(Space::new().width(1).height(24)).style(|_| iced::widget::container::Style {
-            background: Some(Background::Color(Palette::border())),
+    let inner_divider = container(Space::new().width(1).height(Length::Fill)).style(|_| {
+        iced::widget::container::Style {
+            background: Some(Background::Color(Palette::border_subtle())),
             ..Default::default()
-        });
-
-    // One rounded pill holding method + URL — the app's hero input. In
-    // WebSocket mode the method picker and its divider are dropped entirely
-    // (the "WS" badge to the left of the pill already says what this is).
-    let pill_row = if ws_mode {
-        row![url_input]
-    } else {
-        row![method_picker, inner_divider, url_input]
-    };
-    let url_pill = container(pill_row.align_y(Alignment::Center))
-        .style(url_pill_style)
-        .width(Length::Fill);
-
-    let curl_btn: Element<'static, Message> = button(icons::curl().size(11).color(Palette::text_subtle()))
-        .on_press(Message::Request(RequestMsg::ExportCurl))
-        .style(iced::widget::button::text)
-        .padding([5, 6])
-        .into();
-
-    // Clipboard/file import that bypasses text widgets entirely: pasting
-    // megabytes into this bar freezes iced's input shaping for minutes
-    // (see `URL_GUARD_LEN`), so huge commands go through here instead.
-    let import_btn: Element<'static, Message> = button(icons::import().size(11).color(Palette::text_subtle()))
-        .on_press(Message::Request(RequestMsg::OpenImportDialog))
-        .style(iced::widget::button::text)
-        .padding([5, 6])
-        .into();
+        }
+    });
 
     let action_btn: Element<Message> = if ws_mode {
         ws_action_button(tab)
@@ -103,72 +132,128 @@ pub fn view<'a>(
         .style(abort_button)
         .into()
     } else {
-        // Centred in a fixed height: iced's button puts content at the top
-        // padding edge with no vertical centering, so a padding-only button
-        // sits visibly off-centre (issue #29).
-        crate::ui::widgets::centered_button::centered_button(
-            text("Send").size(TEXT_MD).color(Color::WHITE),
-            crate::ui::widgets::centered_button::BUTTON_HEIGHT,
-            20.0,
-        )
-        .on_press(Message::Request(RequestMsg::Send))
-        .style(send_button)
-        .into()
+        send_split(send_menu_open)
     };
 
-    let mut bar = row![]
-        .spacing(6)
-        .align_y(Alignment::Center)
-        .padding([6, 10]);
+    // Mockup `.url-row`: one flat 40px box holding method | URL | Send (Send
+    // inset by 4px). In WebSocket mode the method picker is dropped (the
+    // "WS" badge already says what this is). cURL export moved to the
+    // request header's Share button.
+    let mut pill_row = row![].align_y(Alignment::Center).height(Length::Fill);
     if ws_mode {
-        bar = bar.push(ws_badge());
+        pill_row = pill_row.push(container(ws_badge()).padding([0, 4]));
+    } else {
+        pill_row = pill_row.push(method_picker).push(inner_divider);
     }
-    bar = bar.push(url_pill).push(action_btn);
-    if !ws_mode {
-        bar = bar.push(import_btn).push(curl_btn);
-    }
+    pill_row = pill_row
+        .push(url_input)
+        .push(container(action_btn).padding(4));
+    let url_pill = container(pill_row)
+        .style(url_pill_style)
+        .height(40)
+        .width(Length::Fill);
 
-    // Same resolution the send path uses, so the preview can't claim a different
-    // URL than the one that goes out — the mismatch between this line and the
-    // wire is how the double-scheme bug hid.
-    let mut expanded = (!ws_mode && env.is_some() && tab.url.contains("{{"))
-        .then(|| crate::services::http::resolve_url(&tab.url, env));
-    if let Some(e) = expanded.as_mut() {
-        if e.len() > 256 {
-            let head = crate::services::format::head_capped(e.as_str(), 200);
-            *e = format!("{head}…");
+    let bar = row![url_pill].align_y(Alignment::Center);
+
+    // No resolved-URL line under the bar: the mockup has none, and the
+    // `{{var}}` highlight already marks what gets substituted on Send.
+    container(bar).width(Length::Fill).into()
+}
+
+/// Mockup `.send-wrap`: "→ Send" plus a 30px chevron, split by a faint white
+/// rule. The chevron opens the cURL actions; the cURL import also takes huge
+/// pastes, which must bypass the URL editor (see `URL_GUARD_LEN`).
+fn send_split(open: bool) -> Element<'static, Message> {
+    let send = button(
+        container(
+            row![
+                icons::arrow_right().size(12).color(Color::WHITE),
+                text("Send")
+                    .size(TEXT_MD)
+                    .font(crate::ui::theme::UI_FONT_MEDIUM)
+                    .color(Color::WHITE),
+            ]
+            .spacing(7)
+            .align_y(Alignment::Center),
+        )
+        .center_y(Length::Fill),
+    )
+    .on_press(Message::Request(RequestMsg::Send))
+    .height(Length::Fill)
+    .padding([0, 16])
+    .style(|t, s| split_style(send_button(t, s), true));
+
+    let rule = container(Space::new().width(1).height(Length::Fill)).style(|_| {
+        iced::widget::container::Style {
+            background: Some(Background::Color(Color {
+                a: 0.38,
+                ..Color::WHITE
+            })),
+            ..Default::default()
         }
+    });
+
+    let chevron =
+        button(container(icons::chevron_down().size(11).color(Color::WHITE)).center(Length::Fill))
+            .on_press(Message::Sidebar(
+                crate::message::SidebarMsg::ContextMenuOpened(SEND_MENU.to_owned()),
+            ))
+            .width(30)
+            .height(Length::Fill)
+            .padding(0)
+            .style(move |t, s| {
+                let mut st = split_style(send_button(t, s), false);
+                if open {
+                    st.background =
+                        send_button(t, iced::widget::button::Status::Hovered).background;
+                }
+                st
+            });
+
+    let split: Element<'static, Message> = row![send, rule, chevron].height(Length::Fill).into();
+    if !open {
+        return split;
     }
+    use crate::ui::components::molecules::{menu, menu_item};
+    let items = vec![
+        menu_item(
+            Some(icons::import()),
+            "Import cURL…",
+            Some(Message::Request(RequestMsg::OpenImportDialog)),
+            false,
+        ),
+        menu_item(
+            Some(icons::copy()),
+            "Export as cURL",
+            Some(Message::Request(RequestMsg::ExportCurl)),
+            false,
+        ),
+    ];
+    crate::ui::widgets::popup::popup(
+        split,
+        menu(items, Length::Fixed(200.0)),
+        Message::Sidebar(crate::message::SidebarMsg::ContextMenuClosed),
+    )
+}
 
-    let mut outer = iced::widget::Column::new()
-        .push(container(bar).style(url_bar_container).width(Length::Fill));
-
-    if let Some(exp) = expanded {
-        outer = outer.push(
-            container(
-                row![
-                    Space::new().width(100 + 6),
-                    text(exp)
-                        .size(10)
-                        .color(Palette::accent())
-                        .font(crate::ui::theme::MONO),
-                ]
-                .padding([0, 10]),
-            )
-            .style(|_| iced::widget::container::Style {
-                background: Some(Background::Color(Palette::chrome())),
-                border: Border {
-                    color: Palette::border_subtle(),
-                    width: 0.0,
-                    radius: 0.0.into(),
-                },
-                ..Default::default()
-            })
-            .width(Length::Fill),
-        );
-    }
-
-    outer.into()
+/// Square off the inner corners of one half of the Send split.
+fn split_style(mut st: iced::widget::button::Style, left: bool) -> iced::widget::button::Style {
+    st.border.radius = if left {
+        iced::border::Radius {
+            top_left: 4.0,
+            top_right: 0.0,
+            bottom_right: 0.0,
+            bottom_left: 4.0,
+        }
+    } else {
+        iced::border::Radius {
+            top_left: 0.0,
+            top_right: 4.0,
+            bottom_right: 4.0,
+            bottom_left: 0.0,
+        }
+    };
+    st
 }
 
 fn ws_action_button(tab: &RequestTabState) -> Element<'static, Message> {
@@ -219,22 +304,60 @@ fn method_color(method: &HttpMethod) -> Color {
 
 /// The URL field itself: a multi-line editor constrained to one line,
 /// invisible inside the pill (the pill owns the border).
-fn url_field<'a>(tab: &'a RequestTabState) -> Element<'a, Message> {
-    container(
-        text_editor(&tab.url_editor)
-            .placeholder("https://api.example.com/path  —  or paste a cURL command")
-            .on_action(|action| Message::Request(RequestMsg::UrlEdited(action)))
-            .size(TEXT_MD)
-            .height(Length::Shrink)
-            .padding([4, 10])
-            .wrapping(iced_core::text::Wrapping::None)
-            .style(url_editor_style),
-    )
-    .align_y(iced::Alignment::Center)
-    .width(Length::Fill)
-    .into()
+fn url_field<'a>(
+    tab: &'a RequestTabState,
+    env: Option<&'a crate::domain::environment::AppEnvironment>,
+) -> Element<'a, Message> {
+    let completing = !super::url_variables::matches(tab, env).is_empty();
+    let editor = text_editor(&tab.url_editor)
+        .id("request-url")
+        .placeholder("https://api.example.com/path  —  or paste a cURL command")
+        .on_action(|action| Message::Request(RequestMsg::UrlEdited(action)))
+        .size(TEXT_MD)
+        .font(crate::ui::theme::MONO)
+        .height(Length::Shrink)
+        .padding([4, URL_PAD_X as u16])
+        .wrapping(iced_core::text::Wrapping::None)
+        .style(url_editor_style)
+        .highlight_with::<super::url_highlight::UrlHighlighter>((), super::url_highlight::format)
+        .key_binding(move |press| {
+            use iced::{
+                keyboard::{Key, key::Named},
+                widget::text_editor::{Binding, Status},
+            };
+            if completing
+                && matches!(press.status, Status::Focused { .. })
+                && !press.modifiers.command()
+                && !press.modifiers.alt()
+            {
+                let msg = match press.key {
+                    Key::Named(Named::ArrowDown) => Some(RequestMsg::UrlCompletionMoved(1)),
+                    Key::Named(Named::ArrowUp) => Some(RequestMsg::UrlCompletionMoved(-1)),
+                    Key::Named(Named::Enter | Named::Tab) => {
+                        Some(RequestMsg::UrlCompletionSelected(None))
+                    }
+                    Key::Named(Named::Escape) => Some(RequestMsg::UrlCompletionDismissed),
+                    _ => None,
+                };
+                if let Some(msg) = msg {
+                    return Some(Binding::Custom(Message::Request(msg)));
+                }
+            }
+            Binding::from_key_press(press)
+        });
+    let editor = iced::widget::mouse_area(editor)
+        .on_move(|p| {
+            Message::Request(RequestMsg::UrlHovered(Some(iced::Point::new(
+                p.x - URL_PAD_X,
+                p.y - 4.0,
+            ))))
+        })
+        .on_exit(Message::Request(RequestMsg::UrlHovered(None)));
+    container(super::url_variables::wrap(editor.into(), tab, env))
+        .align_y(iced::Alignment::Center)
+        .width(Length::Fill)
+        .into()
 }
-
 
 /// The URL editor itself is invisible inside the pill — the pill owns the border.
 fn url_editor_style(
@@ -260,45 +383,14 @@ fn url_editor_style(
     }
 }
 
+/// Flat box, mockup `.url-row`: 1px subtle border, 4px radius, no shadow.
 fn url_pill_style(_theme: &iced::Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(Background::Color(Palette::surface_high())),
+        background: Some(Background::Color(Palette::background())),
         border: Border {
             color: Palette::border_subtle(),
             width: 1.0,
-            radius: 10.0.into(),
-        },
-        shadow: Shadow {
-            color: Color {
-                r: 0.0,
-                g: 0.0,
-                b: 0.0,
-                a: 0.25,
-            },
-            offset: Vector::new(0.0, 2.0),
-            blur_radius: 8.0,
-        },
-        ..Default::default()
-    }
-}
-
-fn url_bar_container(_theme: &iced::Theme) -> iced::widget::container::Style {
-    iced::widget::container::Style {
-        background: Some(Background::Color(Palette::chrome())),
-        border: Border {
-            color: Palette::border_subtle(),
-            width: 1.0,
-            radius: 0.0.into(),
-        },
-        shadow: Shadow {
-            color: Color {
-                r: 0.0,
-                g: 0.0,
-                b: 0.0,
-                a: 0.14,
-            },
-            offset: Vector::new(0.0, 1.0),
-            blur_radius: 6.0,
+            radius: 4.0.into(),
         },
         ..Default::default()
     }
@@ -322,18 +414,8 @@ fn send_button(
         })),
         text_color: Color::WHITE,
         border: Border {
-            radius: 8.0.into(),
+            radius: 4.0.into(),
             ..Default::default()
-        },
-        shadow: Shadow {
-            color: Color {
-                r: base_bg.r,
-                g: base_bg.g,
-                b: base_bg.b,
-                a: 0.35,
-            },
-            offset: Vector::new(0.0, 2.0),
-            blur_radius: 10.0,
         },
         ..Default::default()
     }

@@ -43,24 +43,33 @@ pub fn import() -> Text<'static> {
 pub fn export() -> Text<'static> {
     glyph('\u{e19e}')
 } // upload
+pub fn more() -> Text<'static> {
+    glyph('\u{e0b6}')
+} // ellipsis
+pub fn import_box() -> Text<'static> {
+    glyph('\u{e427}')
+} // arrow-down-square
+pub fn folder() -> Text<'static> {
+    glyph('\u{e0d7}')
+} // folder
+pub fn trash() -> Text<'static> {
+    glyph('\u{e18e}')
+} // trash-2
+pub fn alert() -> Text<'static> {
+    glyph('\u{e193}')
+} // alert-triangle
+pub fn folder_plus() -> Text<'static> {
+    glyph('\u{e0d9}')
+} // folder-plus
 pub fn search() -> Text<'static> {
     glyph('\u{e151}')
 } // search
 pub fn plus() -> Text<'static> {
     glyph('\u{e13d}')
 } // plus
-pub fn folder() -> Text<'static> {
-    glyph('\u{e0d7}')
-} // folder
-pub fn folder_plus() -> Text<'static> {
-    glyph('\u{e0d9}')
-} // folder-plus
 pub fn send() -> Text<'static> {
     glyph('\u{e152}')
 } // send
-pub fn curl() -> Text<'static> {
-    glyph('\u{e245}')
-}
 pub fn eye() -> Text<'static> {
     glyph('\u{e0ba}')
 }
@@ -72,15 +81,28 @@ pub fn eye_closed() -> Text<'static> {
 pub fn zap() -> Text<'static> {
     glyph('\u{e1b4}')
 } // zap
-pub fn timer() -> Text<'static> {
-    glyph('\u{e1e0}')
-} // timer
 pub fn globe() -> Text<'static> {
     glyph('\u{e0e8}')
 } // globe
 pub fn braces() -> Text<'static> {
     glyph('\u{e36a}')
 } // braces
+
+/// Saved request/response example (Lucide file-code).
+pub fn example() -> Text<'static> {
+    glyph('\u{e0c3}')
+}
+
+pub fn check_circle() -> Text<'static> {
+    glyph('\u{e07c}')
+}
+
+pub fn panel_left_close() -> Text<'static> {
+    glyph('\u{e21c}')
+}
+pub fn panel_left_open() -> Text<'static> {
+    glyph('\u{e21d}')
+}
 
 // ── Tree / disclosure ─────────────────────────────────────────────────────────────
 pub fn chevron_down() -> Text<'static> {
@@ -114,4 +136,106 @@ pub fn dot<'a, M: 'a>(color: Color) -> Element<'a, M> {
             ..Default::default()
         })
         .into()
+}
+pub fn bookmark() -> Text<'static> {
+    glyph('\u{e060}')
+}
+pub fn check() -> Text<'static> {
+    glyph('\u{e06c}')
+}
+pub fn save() -> Text<'static> {
+    glyph('\u{e14d}')
+}
+pub fn link() -> Text<'static> {
+    glyph('\u{e102}')
+}
+pub fn rotate_ccw() -> Text<'static> {
+    glyph('\u{e148}')
+}
+pub fn arrow_up_to_line() -> Text<'static> {
+    glyph('\u{e45b}')
+}
+pub fn user() -> Text<'static> {
+    glyph('\u{e19f}')
+}
+pub fn layout_grid() -> Text<'static> {
+    glyph('\u{e0ff}')
+}
+pub fn panel_right_close() -> Text<'static> {
+    glyph('\u{e432}')
+}
+pub fn panel_right_open() -> Text<'static> {
+    glyph('\u{e434}')
+}
+pub fn wrap_text() -> Text<'static> {
+    glyph('\u{e248}')
+} // text-wrap
+pub fn external_link() -> Text<'static> {
+    glyph('\u{e0b9}')
+}
+pub fn file_down() -> Text<'static> {
+    glyph('\u{e318}')
+}
+pub fn eraser() -> Text<'static> {
+    glyph('\u{e28f}')
+}
+/// `</>` (Lucide code), response formats XML / HTML.
+pub fn code() -> Text<'static> {
+    glyph('\u{e093}')
+}
+/// Lucide file-code-2, the JavaScript format.
+pub fn file_code() -> Text<'static> {
+    glyph('\u{e45e}')
+}
+/// Lucide letter-text, the Text format.
+pub fn letter_text() -> Text<'static> {
+    glyph('\u{e605}')
+}
+/// Lucide globe-lock, the response network card.
+pub fn globe_lock() -> Text<'static> {
+    glyph('\u{e5cd}')
+}
+/// Lucide timer, the response time card.
+pub fn timer() -> Text<'static> {
+    glyph('\u{e1e0}')
+}
+/// Lucide arrow-down / arrow-up, response / request size.
+pub fn arrow_down() -> Text<'static> {
+    glyph('\u{e042}')
+}
+pub fn arrow_up() -> Text<'static> {
+    glyph('\u{e04a}')
+}
+/// Lucide file-up, form-data file picker.
+pub fn file_up() -> Text<'static> {
+    glyph('\u{e32a}')
+}
+/// Lucide file-type, the Raw format.
+pub fn file_type() -> Text<'static> {
+    glyph('\u{e329}')
+}
+/// Lucide play, the response Preview toggle.
+pub fn play() -> Text<'static> {
+    glyph(PLAY)
+}
+/// Lucide info, auto-generated header hint.
+pub fn info() -> Text<'static> {
+    glyph(INFO)
+}
+const PLAY: char = '\u{e13c}';
+const INFO: char = '\u{e0f9}';
+
+#[cfg(test)]
+mod glyph_tests {
+    #[test]
+    fn new_glyphs_exist_in_the_icon_font() {
+        let face = ttf_parser::Face::parse(include_bytes!("../../assets/fonts/lucide.ttf"), 0)
+            .expect("lucide parses");
+        for (c, name) in [(super::PLAY, "play"), (super::INFO, "info")] {
+            let id = face.glyph_index(c).expect("glyph present");
+            if let Some(found) = face.glyph_name(id) {
+                assert_eq!(found, name);
+            }
+        }
+    }
 }

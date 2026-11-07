@@ -6,7 +6,7 @@ I try to be honest here. Where something is UI only, stubbed, or half wired, I s
 
 ## Toolchain
 
-You need Rust 1.85 or newer. Rustman is edition 2024, as is the `iced-code-editor` fork it builds against, so older toolchains will not build it. The latest stable Rust works fine. Two dependencies come from `rust-man-org` repos on GitHub (the engine and the editor fork) and are fetched by cargo automatically. You also need a C toolchain and CMake, because git2 builds vendored libgit2 and OpenSSL and rusqlite bundles SQLite, all from source. On Linux add the X, xkb, and dbus dev packages (`libxkbcommon-dev libxi-dev libx11-dev libxcb1-dev libxcb-xkb-dev libdbus-1-dev pkg-config cmake build-essential`). Build with `cargo build --release` and the binary lands at `target/release/rustman`. Day to day I just use `cargo run`.
+Use the current stable Rust toolchain through rustup. Rustman and its editor fork use edition 2024, and the locked dependencies may require a compiler newer than the edition minimum; no separate minimum Rust version is validated. Two dependencies come from `rust-man-org` repos on GitHub (the engine and the editor fork) and are fetched by cargo automatically. You also need a C toolchain and CMake, because git2 builds vendored libgit2 and OpenSSL and rusqlite bundles SQLite, all from source. On Linux add the X, xkb, and dbus dev packages (`libxkbcommon-dev libxi-dev libx11-dev libxcb1-dev libxcb-xkb-dev libdbus-1-dev pkg-config cmake build-essential`). Build with `cargo build --release` and the binary lands at `target/release/rustman`. Day to day I just use `cargo run`.
 
 For distro packaging, build with `--no-default-features`: that compiles out the in-app updater (boot check, Settings → Updates card, update banner, and the binary-swapping code) so the package manager is the only thing that delivers updates.
 
@@ -76,6 +76,36 @@ A multi megabyte JSON response should not crash the UI, blow up memory, or freez
 ### Release profile
 
 I ship one small binary. The release profile uses `opt-level = 'z'`, `lto = true`, `codegen-units = 1`, `strip = true`, and `panic = "abort"`. The catch with `panic = "abort"` is that there is no per task isolation, a panic kills the whole process. That makes every stray `.unwrap()` matter more, so the fallible ones (the git2 `workdir().unwrap()` sites, the LRU double lookup, `build_client().expect()`) are worth converting to `?` over time.
+
+### Renderer and memory
+
+Use `sh scripts/ui.sh -r` to build and start the release app on every platform.
+On Windows, use Git Bash with the MSVC build tools available.
+Add `-t` to run both test configurations and the check before the build.
+
+GPU rendering is the default. The launcher selects `wgpu,tiny-skia` unless
+`ICED_BACKEND` has a value. This selects the GPU first and keeps software as a
+fallback. The executable also keeps iced's normal GPU-first behavior.
+The earlier Windows-only software default was removed at the user's request.
+Linux keeps its existing integrated-GPU preference.
+
+To use software rendering for one launch:
+
+```sh
+ICED_BACKEND=tiny-skia sh scripts/ui.sh -r
+```
+
+To use only the GPU renderer for one launch:
+
+```sh
+ICED_BACKEND=wgpu sh scripts/ui.sh -r
+```
+
+Software rendering can use less RAM and more CPU time during repaint.
+Compare memory with the same window size, tabs, collection and warmup time.
+Private working set, total working set and private commit are different counters.
+The previous low-RAM measurements used software rendering. They do not describe
+GPU-default launches. See the company progress checkpoint for measurement details.
 
 ### Not leaking the URL in errors
 

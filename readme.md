@@ -55,6 +55,11 @@ This is not a startup and I am not trying to sell you anything. It is a tool I w
 - **Scripting.** Pre-request and test scripts run on a custom Rust scripting language — see below.
 - **Environment variables.** `{{variable}}` substitution from the active environment, applied to the URL, headers, query params, and the JSON, Text or GraphQL body.
 - **Collections and history.** Organize requests and replay them from history. Local SQLite is the source of truth.
+- **Environment sidebar.** Expand Environments below Collections to see saved environments. Select a name to open its Variable/Value editor in the main workspace. The active environment changes only when you activate it explicitly.
+- **Environment actions.** Hover a saved environment for its active toggle and More menu (Export, Rename, Duplicate, Delete). Type into the final Add variable row to create a variable and reveal the next empty row. Hover an existing variable row to reveal Delete.
+- **Global footer.** Hide or show the sidebar, open a workspace folder or terminal, and view script output in Console. The footer stays available while editing environments and examples.
+- **Import and deletion feedback.** A toast shows when collection import finishes. Deleting a collection requires typing `delete` before confirmation. A success toast appears after deletion. Select Dismiss to close a toast, or wait eight seconds.
+- **Endpoint examples.** Use an endpoint's `···` menu → **Add example**, or use **Save as example** after a response. Edit the request/response snapshot and select **Save example**. Saved examples appear under the endpoint and remain after restart. Editing an example does not send HTTP or change its parent.
 - **Git for collections.** A built in Source Control panel. Commit collections (they are stored as JSON), browse the log, restore any commit back into the app, make and switch branches, see the working diff, and juggle several repos. Clone, fetch, pull, and push go through your system git, so they use the SSH keys and logins you already have. SQLite stays the source of truth and git sits on top.
 - **Import.** cURL commands (native Rust tokenizer), Postman v2 and v2.1 collections, and OpenAPI specs. The OpenAPI parser reads JSON or YAML, but the file picker only offers `.json`, so a `.yaml` spec cannot be chosen through the dialog yet.
 - **Export.** Turn any request into a cURL command, or export a collection as Postman v2.1 JSON.
@@ -63,6 +68,13 @@ This is not a startup and I am not trying to sell you anything. It is a tool I w
 - **Session persistence.** Your open tabs come back next launch.
 - **Self update.** A built in updater (self-replace) grabs and swaps in new releases.
 - **Global default timeout.** One Settings-panel value applied to every request, persisted across restarts.
+
+## Endpoint examples
+
+Endpoint examples are local to this device. They are not included in Git sync or
+Postman import/export. Each example body is limited to 256 KiB. Binary or partial
+responses cannot be saved as examples. Save or discard unsaved example edits
+before you leave the editor or restart the app.
 
 ## Scripting
 
@@ -106,58 +118,155 @@ rather than a rendered page, and PDFs show a binary-response summary.
 
 ## Build from source
 
-You will need a few things first.
+Use the existing launcher: `scripts/ui.sh`. The script builds the app and starts it.
+The default renderer uses the GPU. The script uses `Cargo.lock` for all builds.
 
-- A recent [Rust toolchain](https://www.rust-lang.org/tools/install), 1.85 or newer. Rustman is edition 2024, as is the iced-code-editor fork it builds against, so older toolchains will not build it. The latest stable Rust works fine.
-- A C toolchain and CMake. git2 builds with vendored-libgit2 and vendored-openssl, so libgit2 and OpenSSL compile from source, and rusqlite bundles SQLite. You need a C compiler and cmake on the machine.
-- A few system libraries on Linux, listed below.
+### Prepare the source
 
-Two dependencies (the scripting engine and the editor fork) come from
-`rust-man-org` repos on GitHub and are fetched by cargo automatically —
-there is nothing extra to clone.
+1. Install the current stable [Rust toolchain](https://rust-lang.org/tools/install/).
+2. Install Git.
+3. Clone this repository. Use your team's fork URL if necessary.
+4. Open the repository folder in a terminal.
 
 ```sh
-git clone https://github.com/rust-man-org/rustman
+git clone https://github.com/rust-man-org/rustman.git
 cd rustman
-cargo build --release
 ```
 
-The binary ends up at `target/release/rustman`. The longer guide lives in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+Cargo gets the editor and script engine from GitHub. The first build needs an
+internet connection. Select the branch that you want to build before you start.
 
-Package managers should build with `--no-default-features`:
+### Windows (x86_64)
+
+1. Install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/).
+2. Select **Desktop development with C++**. Include the MSVC compiler and a Windows SDK.
+3. Install CMake. You can use the **C++ CMake tools for Windows** component.
+4. Open [Git Bash](https://gitforwindows.org/) in the repository folder.
+5. Select the MSVC Rust toolchain for this folder.
+6. Start the release build.
 
 ```sh
-cargo build --release --no-default-features
+rustup toolchain install stable-x86_64-pc-windows-msvc
+rustup override set stable-x86_64-pc-windows-msvc
+sh scripts/ui.sh -r
 ```
 
-That compiles out the in-app updater entirely — no launch check, no
-Settings → Updates card, no update banner, none of the crates that swap the
-running binary — so the package manager stays the only thing that touches the
-installed executable. The default build keeps the updater.
+If the compiler or linker is missing, open Git Bash from a Visual Studio developer terminal.
+See the [MSVC setup guide](https://rust-lang.github.io/rustup/installation/windows-msvc.html).
 
-There is no WebKitGTK, GTK or pdfium build dependency: HTML responses are
-rendered as readable text.
+Output: `target/release/rustman.exe`. Close this executable before you build it again.
+Windows cannot replace an executable while it is open. WSL and Node.js are not necessary.
 
-### Linux system dependencies
+### macOS (Apple Silicon or Intel)
+
+1. Install Xcode Command Line Tools.
+2. Install CMake and Perl. The example uses [Homebrew](https://brew.sh/).
+3. Select the stable Rust toolchain for this folder.
+4. Start the release build.
 
 ```sh
+xcode-select --install
+brew install cmake pkg-config perl
+rustup toolchain install stable
+rustup override set stable
+sh scripts/ui.sh -r
+```
+
+Output: `target/release/rustman`. The executable uses the Mac's native architecture.
+Use the release workflow to make a universal `.dmg` package.
+
+### Linux (Ubuntu, Debian or Mint; x86_64 or ARM64)
+
+1. Install the system packages.
+2. Select the stable Rust toolchain for this folder.
+3. Start the release build.
+
+```sh
+sudo apt-get update
 sudo apt-get install -y \
-  libxkbcommon-dev libxi-dev libx11-dev \
-  libxcb1-dev libxcb-xkb-dev libdbus-1-dev \
-  pkg-config cmake build-essential
+  git curl build-essential cmake pkg-config perl \
+  libxkbcommon-dev libxkbcommon-x11-dev libxi-dev libx11-dev \
+  libxcb1-dev libxcb-xkb-dev libdbus-1-dev
+rustup toolchain install stable
+rustup override set stable
+sh scripts/ui.sh -r
 ```
 
-macOS and Windows want the platform C toolchain (Xcode command line tools or MSVC build tools) plus CMake for the vendored native bits, on top of Rust.
+Output: `target/release/rustman`. The executable uses the host's architecture.
+For another Linux distribution, install the equivalent development packages.
+The Linux package list is the same as the CI package list, with Git, curl and Perl added.
+WebKitGTK, GTK and pdfium are not necessary.
 
-### Development
+### Launcher options (all platforms)
+
+Use Git Bash on Windows. Use a terminal with `sh` on macOS or Linux.
+
+| Command | Result |
+|---|---|
+| `sh scripts/ui.sh` | Build and start the debug app with your normal data. |
+| `sh scripts/ui.sh -r` | Build and start the release app with your normal data. |
+| `sh scripts/ui.sh -r -b` | Build the release app only, without starting it. Output: `target/release/rustman` (`.exe` on Windows). |
+| `sh scripts/ui.sh -t -r` | Run both test configurations and the check. Then build and start the release app. |
+| `sh scripts/ui.sh -r -x` | Build and start the release app with the example workspace. |
+| `sh scripts/ui.sh -r -s` | Build and start the release app with a copy of your local data. |
+| `sh scripts/ui.sh -r -d "target/my-data"` | Use a separate data folder. |
+| `sh scripts/ui.sh -r -g software` | Start the release app with CPU rendering (smallest RAM, about 13 MB). |
+| `sh scripts/ui.sh -r -g gpu-high` | Start the release app on the discrete GPU. |
+| `sh scripts/ui.sh -h` | Show the launcher options and the pros and cons of each renderer. |
+
+Renderer modes (`-g`):
+
+- `gpu` (default): integrated GPU, DX12 only on Windows.
+  - Pro: smooth repaint, idle CPU, saves battery. Falls back to software when no GPU works.
+  - Con: about 80–100 MB RAM for the graphics driver and buffers.
+- `gpu-high`: discrete GPU.
+  - Pro: most graphics headroom.
+  - Con: wakes the discrete GPU (more power). No real gain for this app.
+- `software`: CPU rendering (tiny-skia).
+  - Pro: about 13 MB RAM. No GPU driver problems (old drivers, remote desktop, VMs).
+  - Con: more CPU work during scroll and typing. Less smooth on large or high-DPI screens.
+
+The example workspace uses `target/ui-example/`. Your normal collections stay in their original folder.
+The sample-copy option uses `target/ui-data/`. Changes to that copy stay in the copy.
+
+### Renderer and RAM
+
+GPU rendering is the default on all platforms. The launcher can use software rendering if the GPU cannot start.
+An explicit `ICED_BACKEND` value has priority over the launcher default.
+Linux keeps its existing integrated-GPU preference.
+
+To select the software renderer for one launch, use this command:
 
 ```sh
-cargo run
+ICED_BACKEND=tiny-skia sh scripts/ui.sh -r
 ```
+
+To select only the GPU renderer for one launch, use this command:
+
+```sh
+ICED_BACKEND=wgpu sh scripts/ui.sh -r
+```
+
+Software rendering can use less RAM. It can use more CPU time when the screen changes.
+The measured Windows RAM values do not apply to all platforms or workloads.
+Use the same data, tabs and window size when you compare memory use.
+Private working set and total working set are different measurements.
+
+### Test the launcher
+
+This test uses a fake Cargo command and fake app executables. It does not start Rustman.
+
+```sh
+sh tests/ui-script.sh
+```
+
+For package-manager builds without the updater, see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+The launcher builds the normal app with the updater. Automatic update checks are off by default.
+Release optimization can make a build slow, especially the first build.
 
 ## Tech stack
 
-- **GUI.** [iced](https://github.com/iced-rs/iced) 0.14, pure Rust, drawn with wgpu.
+- **GUI.** [iced](https://github.com/iced-rs/iced) 0.14, pure Rust, with software (`tiny-skia`) and GPU (`wgpu`) renderers.
 - **HTTP.** reqwest with rustls and multipart.
 - **WebSocket.** tokio-tungstenite.
 - **Storage.** rusqlite (bundled SQLite), the source of truth.

@@ -32,8 +32,20 @@ pub(super) fn migrate(conn: &Connection) {
 
 /// Insert or replace one draft, data + base + conflicts together.
 pub fn upsert_draft(conn: &Connection, draft: &RequestDraft) -> Result<(), String> {
-    let data = serde_json::to_string(&draft.data).map_err(|e| e.to_string())?;
-    let base = serde_json::to_string(&draft.base).map_err(|e| e.to_string())?;
+    let data = super::vault::seal(
+        conn,
+        "request_drafts",
+        "data",
+        &draft.request_id,
+        &serde_json::to_string(&draft.data).map_err(|e| e.to_string())?,
+    )?;
+    let base = super::vault::seal(
+        conn,
+        "request_drafts",
+        "base",
+        &draft.request_id,
+        &serde_json::to_string(&draft.base).map_err(|e| e.to_string())?,
+    )?;
     let conflicts = serde_json::to_string(&draft.conflicts).map_err(|e| e.to_string())?;
     let review = match &draft.review {
         Some(r) => Some(serde_json::to_string(r).map_err(|e| e.to_string())?),
@@ -100,6 +112,8 @@ pub fn get_drafts(conn: &Connection) -> Result<Vec<RequestDraft>, String> {
     for row in rows {
         let (request_id, collection_id, data, base, updated_at, conflicts, review) =
             row.map_err(|e| e.to_string())?;
+        let data = super::vault::unseal(conn, "request_drafts", "data", &request_id, &data)?;
+        let base = super::vault::unseal(conn, "request_drafts", "base", &request_id, &base)?;
         let (Ok(data), Ok(base)) = (serde_json::from_str(&data), serde_json::from_str(&base))
         else {
             continue;
@@ -234,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_row_is_skipped_not_fatal() {
+    fn unauthenticated_row_is_rejected() {
         let c = conn();
         upsert_draft(&c, &draft()).unwrap();
         c.execute(
@@ -243,6 +257,6 @@ mod tests {
             [],
         )
         .unwrap();
-        assert_eq!(get_drafts(&c).unwrap().len(), 1);
+        assert!(get_drafts(&c).is_err());
     }
 }

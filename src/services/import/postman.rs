@@ -10,12 +10,33 @@ use crate::domain::{
 struct PostmanCollection {
     info: PostmanInfo,
     item: Vec<PostmanItem>,
+    /// Collection-level auth; folders and requests without their own
+    /// inherit it (Postman's "Inherit auth from parent").
+    auth: Option<serde_json::Value>,
+    /// Collection variables. Rustman resolves `{{var}}` from environments,
+    /// so these become an environment named after the collection.
+    #[serde(default)]
+    variable: Vec<PostmanVariable>,
 }
 
 #[derive(Deserialize)]
 struct PostmanInfo {
     name: String,
+    #[serde(rename = "_postman_id")]
+    postman_id: Option<String>,
 }
+
+#[derive(Deserialize)]
+struct PostmanVariable {
+    key: Option<String>,
+    value: Option<serde_json::Value>,
+    #[serde(default)]
+    disabled: bool,
+}
+
+/// Marks a Postman script imported as comments: Rustman scripts use their
+/// own language, so the source is kept for porting but never run.
+pub const SCRIPT_MARKER: &str = "// Postman script (not run in Rustman";
 
 #[derive(Deserialize)]
 #[serde(untagged)]
@@ -28,12 +49,15 @@ enum PostmanItem {
 struct PostmanFolder {
     name: String,
     item: Vec<PostmanItem>,
+    auth: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
 struct PostmanRequestItem {
     name: String,
     request: PostmanRequest,
+    #[serde(default)]
+    event: Vec<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -42,6 +66,7 @@ struct PostmanRequest {
     url: Option<PostmanUrl>,
     header: Option<Vec<PostmanHeader>>,
     body: Option<PostmanBody>,
+    auth: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -63,6 +88,8 @@ struct PostmanHeader {
     value: String,
     #[serde(default)]
     disabled: bool,
+    #[serde(default)]
+    description: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -78,7 +105,9 @@ struct PostmanBody {
     mode: Option<String>,
     raw: Option<String>,
     formdata: Option<Vec<PostmanFormField>>,
+    urlencoded: Option<Vec<PostmanFormField>>,
     graphql: Option<PostmanGraphQl>,
+    options: Option<serde_json::Value>,
 }
 
 /// Postman's GraphQL body: the query and its variables live side by side. Older
@@ -98,6 +127,9 @@ struct PostmanFormField {
     field_type: String,
     #[serde(default)]
     disabled: bool,
+    /// A string, or `{content, type}` in some exports.
+    #[serde(default)]
+    description: Option<serde_json::Value>,
 }
 
 // ── Import ────────────────────────────────────────────────────────────────────
@@ -115,12 +147,235 @@ pub fn import(json: &str) -> Result<Vec<ImportedCollection>, String> {
     // Folders become groups so the imported tree matches what the user sees
     // in Postman instead of being flattened into one long request list
     // (issue #53).
-    let (requests, groups) = convert_items(&collection.id, &collection.id, true, 0, &col.item);
+    let (requests, groups) = convert_items(
+        &collection.id,
+        &collection.id,
+        true,
+        0,
+        &col.item,
+        col.auth.as_ref(),
+    );
     Ok(vec![ImportedCollection {
         collection,
         requests,
         groups,
     }])
+}
+
+/// The collection's enabled variables as an inactive environment named
+/// after it. The id derives from the Postman id, so importing the same
+/// collection again updates that environment instead of adding another.
+pub fn collection_environment(json: &str) -> Option<crate::domain::environment::AppEnvironment> {
+    let col: PostmanCollection = serde_json::from_str(json).ok()?;
+    let variables: std::collections::HashMap<String, String> = col
+        .variable
+        .iter()
+        .filter(|v| !v.disabled)
+        .filter_map(|v| {
+            let key = v.key.as_deref()?.trim();
+            (!key.is_empty()).then(|| (key.to_owned(), value_text(v.value.as_ref())))
+        })
+        .collect();
+    if variables.is_empty() {
+        return None;
+    }
+    Some(crate::domain::environment::AppEnvironment {
+        id: match &col.info.postman_id {
+            Some(id) if !id.trim().is_empty() => format!("postman-collection-{id}"),
+            _ => uuid::Uuid::new_v4().to_string(),
+        },
+        name: col.info.name.clone(),
+        variables,
+        is_active: false,
+    })
+}
+
+/// Postman values are usually strings, sometimes numbers or booleans.
+fn value_text(v: Option<&serde_json::Value>) -> String {
+    match v {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::Null) | None => String::new(),
+        Some(other) => other.to_string(),
+    }
+}
+
+/// A Postman description: a plain string or `{content, type}`.
+fn description_text(v: Option<&serde_json::Value>) -> String {
+    match v {
+        Some(serde_json::Value::Object(o)) => value_text(o.get("content")),
+        other => value_text(other),
+    }
+}
+
+/// A Postman environment file (`{name, values: [{key, value, enabled}]}`),
+/// as exported per environment or found in a data dump's `environment/`.
+/// Disabled values are skipped, matching what Postman resolves.
+pub fn import_environment(
+    json: &str,
+) -> Result<crate::domain::environment::AppEnvironment, String> {
+    #[derive(Deserialize)]
+    struct EnvFile {
+        id: Option<String>,
+        name: Option<String>,
+        values: Vec<EnvValue>,
+    }
+    #[derive(Deserialize)]
+    struct EnvValue {
+        key: Option<String>,
+        value: Option<serde_json::Value>,
+        #[serde(default = "enabled_default")]
+        enabled: bool,
+    }
+    fn enabled_default() -> bool {
+        true
+    }
+    let file: EnvFile =
+        serde_json::from_str(json).map_err(|e| format!("Not a Postman environment: {e}"))?;
+    let variables = file
+        .values
+        .iter()
+        .filter(|v| v.enabled)
+        .filter_map(|v| {
+            let key = v.key.as_deref()?.trim();
+            (!key.is_empty()).then(|| (key.to_owned(), value_text(v.value.as_ref())))
+        })
+        .collect();
+    Ok(crate::domain::environment::AppEnvironment {
+        id: match &file.id {
+            Some(id) if !id.trim().is_empty() => format!("postman-env-{id}"),
+            _ => uuid::Uuid::new_v4().to_string(),
+        },
+        name: file
+            .name
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| "Imported environment".to_owned()),
+        variables,
+        is_active: false,
+    })
+}
+
+/// Postman's old v1 collection shape (`requests` + `order`, no `info`).
+pub fn is_v1_collection(json: &str) -> bool {
+    let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(json) else {
+        return false;
+    };
+    !map.contains_key("info") && map.get("requests").is_some_and(|r| r.is_array())
+}
+
+/// The `name` of a v1 collection, for its picker row.
+pub fn v1_name(json: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(json)
+        .ok()?
+        .get("name")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+/// A Postman data dump's `archive.json`: only an index of ids, no data.
+pub fn is_dump_index(json: &str) -> bool {
+    let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(json) else {
+        return false;
+    };
+    !map.is_empty()
+        && map.keys().all(|k| {
+            matches!(
+                k.as_str(),
+                "collection" | "environment" | "globals" | "headerPreset"
+            )
+        })
+        && map.values().all(|v| v.is_object())
+}
+
+/// Read one auth parameter. v2.1 stores `[{key, value}]`, v2.0 an object.
+fn auth_param(auth: &serde_json::Value, kind: &str, key: &str) -> String {
+    match auth.get(kind) {
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .find(|i| i.get("key").and_then(|k| k.as_str()) == Some(key))
+            .map(|i| value_text(i.get("value")))
+            .unwrap_or_default(),
+        Some(serde_json::Value::Object(map)) => value_text(map.get(key)),
+        _ => String::new(),
+    }
+}
+
+/// An item's own auth, or `None` when it says "inherit from parent".
+fn own_auth(auth: Option<&serde_json::Value>) -> Option<&serde_json::Value> {
+    auth.filter(|a| a.get("type").and_then(|t| t.as_str()) != Some("inherit"))
+}
+
+/// Copy a Postman auth block onto the request. Types Rustman has no
+/// equivalent for (OAuth 2, Digest, AWS…) leave the request on No Auth.
+fn apply_auth(req: &mut SavedRequest, auth: Option<&serde_json::Value>) {
+    let Some(auth) = auth else { return };
+    match auth.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+        "bearer" => {
+            req.auth_type = AuthType::Bearer;
+            req.bearer_token = auth_param(auth, "bearer", "token");
+        }
+        "basic" => {
+            req.auth_type = AuthType::Basic;
+            req.basic_user = auth_param(auth, "basic", "username");
+            req.basic_pass = auth_param(auth, "basic", "password");
+        }
+        "apikey" => {
+            req.auth_type = AuthType::ApiKey;
+            req.api_key_name = auth_param(auth, "apikey", "key");
+            req.api_key_value = auth_param(auth, "apikey", "value");
+            req.api_key_location = if auth_param(auth, "apikey", "in") == "query" {
+                ApiKeyLocation::Query
+            } else {
+                ApiKeyLocation::Header
+            };
+        }
+        _ => {}
+    }
+}
+
+/// The request's own `prerequest` / `test` script source, commented out
+/// under [`SCRIPT_MARKER`] so it is kept for porting but never executed.
+fn script_source(events: &[serde_json::Value], listen: &str) -> String {
+    let lines: Vec<String> = events
+        .iter()
+        .filter(|e| e.get("listen").and_then(|l| l.as_str()) == Some(listen))
+        .filter_map(|e| e.get("script")?.get("exec").cloned())
+        .flat_map(|exec| match exec {
+            serde_json::Value::Array(lines) => lines
+                .iter()
+                .map(|l| l.as_str().unwrap_or_default().to_owned())
+                .collect::<Vec<_>>(),
+            serde_json::Value::String(s) => s.lines().map(str::to_owned).collect(),
+            _ => Vec::new(),
+        })
+        .collect();
+    if lines.iter().all(|l| l.trim().is_empty()) {
+        return String::new();
+    }
+    let mut out = format!("{SCRIPT_MARKER} — port it to Rustman script)\n");
+    for line in lines {
+        out.push_str("// ");
+        out.push_str(&line);
+        out.push('\n');
+    }
+    out
+}
+
+/// The runnable source of a script [`script_source`] kept as comments.
+/// `None` when `text` is not such a script.
+pub fn enable_imported_script(text: &str) -> Option<String> {
+    let (first, rest) = text.split_once('\n')?;
+    if !first.starts_with(SCRIPT_MARKER) {
+        return None;
+    }
+    let lines: Vec<&str> = rest
+        .lines()
+        .map(|l| {
+            l.strip_prefix("// ")
+                .or_else(|| l.strip_prefix("//"))
+                .unwrap_or(l)
+        })
+        .collect();
+    Some(lines.join("\n"))
 }
 
 /// Convert a Postman item list into (direct request leaves, child groups)
@@ -132,6 +387,7 @@ fn convert_items(
     parent_is_collection: bool,
     sort_order: i64,
     items: &[PostmanItem],
+    inherited_auth: Option<&serde_json::Value>,
 ) -> (Vec<SavedRequest>, Vec<crate::domain::group::ImportedGroup>) {
     let mut requests = Vec::new();
     let mut groups = Vec::new();
@@ -140,13 +396,23 @@ fn convert_items(
         match item {
             PostmanItem::Request(ri) => {
                 let mut req = convert_request(collection_id, ri);
+                apply_auth(
+                    &mut req,
+                    own_auth(ri.request.auth.as_ref()).or(inherited_auth),
+                );
                 req.sort_order = order;
                 requests.push(req);
             }
             PostmanItem::Folder(folder) => {
                 let group_id = uuid::Uuid::new_v4().to_string();
-                let (child_reqs, child_groups) =
-                    convert_items(collection_id, &group_id, false, 0, &folder.item);
+                let (child_reqs, child_groups) = convert_items(
+                    collection_id,
+                    &group_id,
+                    false,
+                    0,
+                    &folder.item,
+                    own_auth(folder.auth.as_ref()).or(inherited_auth),
+                );
                 groups.push(crate::domain::group::ImportedGroup {
                     id: group_id,
                     parent_id: parent_id.to_owned(),
@@ -186,6 +452,7 @@ fn convert_request(collection_id: &str, item: &PostmanRequestItem) -> SavedReque
                     key: p.key.clone(),
                     value: p.value.clone().unwrap_or_default(),
                     enabled: !p.disabled,
+                    description: String::new(),
                 })
                 .collect();
             // The query is kept in `params`; strip it from the URL so it isn't
@@ -209,17 +476,54 @@ fn convert_request(collection_id: &str, item: &PostmanRequestItem) -> SavedReque
             key: h.key.clone(),
             value: h.value.clone(),
             enabled: !h.disabled,
+            description: description_text(h.description.as_ref()),
         })
         .collect();
 
     let (body, body_type, form_fields, graphql_variables) = match &r.body {
         Some(b) => match b.mode.as_deref() {
-            Some("raw") => (
-                b.raw.clone().unwrap_or_default(),
-                BodyType::Json,
-                vec![],
-                String::new(),
-            ),
+            Some("raw") => {
+                let raw = b.raw.clone().unwrap_or_default();
+                let language = b
+                    .options
+                    .as_ref()
+                    .and_then(|o| o.get("raw")?.get("language")?.as_str());
+                // Postman marks the raw language; without it, sniff JSON.
+                let is_json = match language {
+                    Some(lang) => lang.eq_ignore_ascii_case("json"),
+                    None => {
+                        let t = raw.trim_start();
+                        t.is_empty() || t.starts_with('{') || t.starts_with('[')
+                    }
+                };
+                let body_type = if is_json {
+                    BodyType::Json
+                } else {
+                    BodyType::Text
+                };
+                (raw, body_type, vec![], String::new())
+            }
+            // x-www-form-urlencoded keeps its own mode (see services::http).
+            Some("urlencoded") => {
+                let fields = b
+                    .urlencoded
+                    .as_deref()
+                    .unwrap_or(&[])
+                    .iter()
+                    .map(|f| FormField {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        key: f.key.clone(),
+                        value: f.value.clone().unwrap_or_default(),
+                        field_type: FormFieldType::Text,
+                        enabled: !f.disabled,
+                        file_name: None,
+                        file_data: None,
+                        description: description_text(f.description.as_ref()),
+                        mime_type: None,
+                    })
+                    .collect();
+                (String::new(), BodyType::UrlEncoded, fields, String::new())
+            }
             Some("graphql") => {
                 let gql = b.graphql.as_ref();
                 let query = gql.and_then(|g| g.query.clone()).unwrap_or_default();
@@ -252,6 +556,7 @@ fn convert_request(collection_id: &str, item: &PostmanRequestItem) -> SavedReque
                         enabled: !f.disabled,
                         file_name: None,
                         file_data: None,
+                        description: description_text(f.description.as_ref()),
                         mime_type: None,
                     })
                     .collect();
@@ -288,8 +593,8 @@ fn convert_request(collection_id: &str, item: &PostmanRequestItem) -> SavedReque
         jwt_secret: String::new(),
         jwt_subject: String::new(),
         jwt_algo: "HS256".to_owned(),
-        pre_request_script: String::new(),
-        test_script: String::new(),
+        pre_request_script: script_source(&item.event, "prerequest"),
+        test_script: script_source(&item.event, "test"),
     }
 }
 
@@ -327,7 +632,13 @@ fn export_request(req: &SavedRequest) -> serde_json::Value {
     let headers: Vec<Value> = req
         .headers
         .iter()
-        .map(|h| json!({ "key": h.key, "value": h.value, "disabled": !h.enabled }))
+        .map(|h| {
+            let mut v = json!({ "key": h.key, "value": h.value, "disabled": !h.enabled });
+            if !h.description.is_empty() {
+                v["description"] = json!(h.description);
+            }
+            v
+        })
         .collect();
 
     let body: Value = match req.body_type {
@@ -346,10 +657,28 @@ fn export_request(req: &SavedRequest) -> serde_json::Value {
                                 "key": f.key,
                                 "value": f.value,
                                 "type": match f.field_type { FormFieldType::File => "file", FormFieldType::Text => "text" },
+                                "description": f.description,
+                                "disabled": !f.enabled,
                             })
                         })
                         .collect();
             json!({ "mode": "formdata", "formdata": fields })
+        }
+        BodyType::UrlEncoded => {
+            let fields: Vec<Value> = req
+                .form_data_fields
+                .iter()
+                .map(|f| {
+                    json!({
+                        "key": f.key,
+                        "value": f.value,
+                        "type": "text",
+                        "description": f.description,
+                        "disabled": !f.enabled,
+                    })
+                })
+                .collect();
+            json!({ "mode": "urlencoded", "urlencoded": fields })
         }
         BodyType::GraphQL => json!({
             "mode": "graphql",
@@ -370,4 +699,153 @@ fn export_request(req: &SavedRequest) -> serde_json::Value {
             "body": body,
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SAMPLE: &str =
+        include_str!("../../../samples/postman/rustman-sample.postman_collection.json");
+
+    #[test]
+    fn bundled_sample_imports_cleanly() {
+        let cols = import(SAMPLE).expect("sample must parse");
+        assert_eq!(cols.len(), 1);
+        let col = &cols[0];
+        assert_eq!(col.collection.name, "Rustman Sample (Postman)");
+
+        // Top level: users, posts, forms, graphql + one loose request.
+        let top: Vec<&str> = col.groups.iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(top, ["users", "posts", "forms", "graphql"]);
+        assert_eq!(col.requests.len(), 1);
+        assert_eq!(
+            col.requests[0].url,
+            "https://jsonplaceholder.typicode.com/todos/1"
+        );
+
+        let posts = &col.groups[1];
+        assert_eq!(posts.groups.len(), 1, "posts/comments is nested");
+        assert_eq!(posts.groups[0].name, "comments");
+
+        let all: Vec<&SavedRequest> = col
+            .all_groups()
+            .iter()
+            .flat_map(|g| g.requests.iter())
+            .chain(col.requests.iter())
+            .collect();
+        assert_eq!(all.len(), 12);
+        let by = |n: &str| *all.iter().find(|r| r.name == n).expect(n);
+
+        let search = by("Search users");
+        assert_eq!(search.params.len(), 3);
+        assert!(!search.params[2].enabled, "disabled query param stays off");
+
+        let create = by("Create post");
+        assert_eq!(create.body_type, BodyType::Json);
+        assert!(create.body.contains("Hello from Rustman"));
+        assert!(!create.headers[1].enabled, "disabled header stays off");
+
+        let form = by("Form-data echo");
+        assert_eq!(form.body_type, BodyType::FormData);
+        assert_eq!(form.form_data_fields.len(), 3);
+
+        let gql = by("Country by code");
+        assert_eq!(gql.body_type, BodyType::GraphQL);
+        assert!(gql.graphql_variables.contains("\"ID\""));
+    }
+
+    #[test]
+    fn auth_is_inherited_and_overridable() {
+        let json = r#"{
+          "info": {"name": "A", "_postman_id": "p1"},
+          "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{token}}"}]},
+          "variable": [{"key": "base_url", "value": "https://x.test"}, {"key": "off", "value": "1", "disabled": true}],
+          "item": [
+            {"name": "F", "auth": {"type": "basic", "basic": [{"key": "username", "value": "u"}, {"key": "password", "value": "p"}]},
+             "item": [{"name": "In folder", "request": {"method": "GET", "url": "{{base_url}}/a"}}]},
+            {"name": "Inherits", "request": {"method": "GET", "url": "{{base_url}}/b"}},
+            {"name": "Opts out", "request": {"method": "GET", "url": "{{base_url}}/c", "auth": {"type": "noauth"}}},
+            {"name": "Key", "request": {"method": "GET", "url": "{{base_url}}/d",
+              "auth": {"type": "apikey", "apikey": [{"key": "key", "value": "X-Key"}, {"key": "value", "value": "k"}, {"key": "in", "value": "query"}]}},
+             "event": [{"listen": "test", "script": {"exec": ["pm.test(\"ok\", () => {});"]}}]}
+          ]
+        }"#;
+        let col = import(json).unwrap().remove(0);
+        let all = col.all_requests();
+        let by = |n: &str| *all.iter().find(|r| r.name == n).expect(n);
+        assert_eq!(by("In folder").auth_type, AuthType::Basic);
+        assert_eq!(by("In folder").basic_user, "u");
+        assert_eq!(by("Inherits").auth_type, AuthType::Bearer);
+        assert_eq!(by("Inherits").bearer_token, "{{token}}");
+        assert_eq!(by("Opts out").auth_type, AuthType::None);
+        let key = by("Key");
+        assert_eq!(key.api_key_location, ApiKeyLocation::Query);
+        assert!(key.test_script.starts_with(SCRIPT_MARKER));
+        assert!(key.test_script.contains("// pm.test"));
+
+        let env = collection_environment(json).expect("variables map to an environment");
+        assert_eq!(env.id, "postman-collection-p1");
+        assert_eq!(
+            env.variables.get("base_url").map(String::as_str),
+            Some("https://x.test")
+        );
+        assert!(!env.variables.contains_key("off"));
+    }
+
+    #[test]
+    fn environment_files_and_dump_index() {
+        let env = import_environment(
+            r#"{"id": "e1", "name": "Staging", "values": [
+              {"key": "host", "value": "s.test", "enabled": true, "type": "default"},
+              {"key": "old", "value": "x", "enabled": false}]}"#,
+        )
+        .unwrap();
+        assert_eq!(env.id, "postman-env-e1");
+        assert_eq!(env.name, "Staging");
+        assert_eq!(env.variables.len(), 1);
+        assert!(is_dump_index(
+            r#"{"collection": {"a": true}, "environment": {"b": true}}"#
+        ));
+        assert!(!is_dump_index(r#"{"info": {"name": "x"}, "item": []}"#));
+    }
+
+    #[test]
+    fn raw_language_picks_text_or_json() {
+        let json = r#"{"info": {"name": "R"}, "item": [
+          {"name": "xml", "request": {"method": "POST", "url": "u", "body": {"mode": "raw", "raw": "<a/>", "options": {"raw": {"language": "xml"}}}}},
+          {"name": "form", "request": {"method": "POST", "url": "u", "body": {"mode": "urlencoded", "urlencoded": [{"key": "a", "value": "1", "description": {"content": "the a field"}}]}}}
+        ]}"#;
+        let col = import(json).unwrap().remove(0);
+        assert_eq!(col.requests[0].body_type, BodyType::Text);
+        assert_eq!(col.requests[1].body_type, BodyType::UrlEncoded);
+        assert_eq!(col.requests[1].form_data_fields.len(), 1);
+        assert_eq!(
+            col.requests[1].form_data_fields[0].description,
+            "the a field"
+        );
+        let out: serde_json::Value = serde_json::from_str(&export(&col)).unwrap();
+        assert_eq!(out["item"][1]["request"]["body"]["mode"], "urlencoded");
+    }
+}
+
+#[cfg(test)]
+mod enable_script_tests {
+    use super::*;
+
+    #[test]
+    fn an_imported_script_round_trips_to_its_source() {
+        let events = [serde_json::json!({
+            "listen": "test",
+            "script": {"exec": ["var d = JSON.parse(responseBody);", "", "// note"]},
+        })];
+        let kept = script_source(&events, "test");
+        assert!(kept.starts_with(SCRIPT_MARKER));
+        assert_eq!(
+            enable_imported_script(&kept).unwrap(),
+            "var d = JSON.parse(responseBody);\n\n// note"
+        );
+        assert!(enable_imported_script("var a = 1;\nvar b = 2;").is_none());
+        assert!(enable_imported_script("").is_none());
+    }
 }

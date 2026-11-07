@@ -14,8 +14,10 @@ use crate::state::session::AppSession;
 
 // Company-edition table owners (contract C11).
 pub mod drafts;
+pub mod examples;
 pub mod meta;
 pub mod secrets;
+pub mod vault;
 
 // ── DB init ───────────────────────────────────────────────────────────────────
 
@@ -71,6 +73,9 @@ pub fn open(data_dir: &PathBuf) -> SqlResult<Connection> {
          );",
     )?;
     migrate(&conn);
+    examples::migrate(&conn)?;
+    vault::migrate(&conn)
+        .map_err(|e| rusqlite::Error::InvalidParameterName(format!("Encrypted storage: {e}")))?;
     Ok(conn)
 }
 
@@ -128,17 +133,19 @@ pub fn update_collection(conn: &Connection, id: &str, name: &str) -> Result<(), 
 }
 
 pub fn delete_collection(conn: &Connection, id: &str) -> Result<(), String> {
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     // Cascade: the collection's requests and every group underneath it go
     // with it. (Requests used to be orphaned here; groups are new.)
-    conn.execute("DELETE FROM requests WHERE collection_id=?1", params![id])
+    tx.execute("DELETE FROM requests WHERE collection_id=?1", params![id])
         .map_err(|e| e.to_string())?;
-    let groups = get_groups(conn).unwrap_or_default();
+    let groups = get_groups(&tx)?;
     for g in descendant_groups(&groups, id, true) {
-        let _ = conn.execute("DELETE FROM groups WHERE id=?1", params![g]);
+        tx.execute("DELETE FROM groups WHERE id=?1", params![g])
+            .map_err(|e| e.to_string())?;
     }
-    conn.execute("DELETE FROM collections WHERE id=?1", params![id])
+    tx.execute("DELETE FROM collections WHERE id=?1", params![id])
         .map_err(|e| e.to_string())?;
-    Ok(())
+    tx.commit().map_err(|e| e.to_string())
 }
 
 /// All groups transitively under `parent_id`, ordered parents-first so a
@@ -225,6 +232,22 @@ pub fn update_group_order(conn: &Connection, id: &str, sort_order: i64) -> Resul
     Ok(())
 }
 
+/// Re-parent a group (drag into another folder or collection).
+pub fn update_group_parent(
+    conn: &Connection,
+    id: &str,
+    parent_id: &str,
+    parent_is_collection: bool,
+    sort_order: i64,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE groups SET parent_id=?1, parent_is_collection=?2, sort_order=?3 WHERE id=?4",
+        params![parent_id, parent_is_collection, sort_order, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Delete a group and everything under it: descendant groups plus every
 /// request in the subtree.
 pub fn delete_group(conn: &Connection, id: &str) -> Result<(), String> {
@@ -263,8 +286,14 @@ pub fn get_environments(conn: &Connection) -> Result<Vec<AppEnvironment>, String
     rows.map(|r| {
         r.map_err(|e| e.to_string())
             .and_then(|(id, name, vars_json, is_active)| {
-                let variables: HashMap<String, String> =
-                    serde_json::from_str(&vars_json).unwrap_or_default();
+                let variables: HashMap<String, String> = serde_json::from_str(&vault::unseal(
+                    conn,
+                    "environments",
+                    "variables",
+                    &id,
+                    &vars_json,
+                )?)
+                .map_err(|_| "Invalid environment data".to_owned())?;
                 Ok(AppEnvironment {
                     id,
                     name,
@@ -277,11 +306,17 @@ pub fn get_environments(conn: &Connection) -> Result<Vec<AppEnvironment>, String
 }
 
 pub fn save_environment(conn: &Connection, env: &AppEnvironment) -> Result<(), String> {
+    let vars = vault::seal(
+        conn,
+        "environments",
+        "variables",
+        &env.id,
+        &serde_json::to_string(&env.variables).map_err(|e| e.to_string())?,
+    )?;
     if env.is_active {
         conn.execute("UPDATE environments SET is_active=0", [])
             .map_err(|e| e.to_string())?;
     }
-    let vars = serde_json::to_string(&env.variables).unwrap_or_else(|_| "{}".to_owned());
     conn.execute(
         "INSERT OR REPLACE INTO environments (id,name,variables,is_active) VALUES (?1,?2,?3,?4)",
         params![env.id, env.name, vars, env.is_active as i32],
@@ -323,8 +358,15 @@ pub fn get_history(conn: &Connection) -> Result<Vec<HistoryEntry>, String> {
     rows.map(|r| {
         r.map_err(|e| e.to_string()).and_then(
             |(id, timestamp, method, url, status, duration, req_json)| {
-                let request: SavedRequest =
-                    serde_json::from_str(&req_json).map_err(|e| e.to_string())?;
+                let request: SavedRequest = serde_json::from_str(&vault::unseal(
+                    conn,
+                    "history",
+                    "request_json",
+                    &id,
+                    &req_json,
+                )?)
+                .map_err(|e| e.to_string())?;
+                let url = vault::unseal(conn, "history", "url", &id, &url)?;
                 Ok(HistoryEntry {
                     id,
                     timestamp,
@@ -341,7 +383,14 @@ pub fn get_history(conn: &Connection) -> Result<Vec<HistoryEntry>, String> {
 }
 
 pub fn add_history(conn: &Connection, entry: &HistoryEntry) -> Result<(), String> {
-    let req_json = serde_json::to_string(&entry.request).map_err(|e| e.to_string())?;
+    let req_json = vault::seal(
+        conn,
+        "history",
+        "request_json",
+        &entry.id,
+        &serde_json::to_string(&entry.request).map_err(|e| e.to_string())?,
+    )?;
+    let url = vault::seal(conn, "history", "url", &entry.id, &entry.url)?;
     conn.execute(
         "INSERT OR REPLACE INTO history (id,timestamp,method,url,status,duration,request_json) \
          VALUES (?1,?2,?3,?4,?5,?6,?7)",
@@ -349,7 +398,7 @@ pub fn add_history(conn: &Connection, entry: &HistoryEntry) -> Result<(), String
             entry.id,
             entry.timestamp,
             entry.method,
-            entry.url,
+            url,
             entry.status,
             entry.duration_ms,
             req_json
@@ -374,7 +423,13 @@ pub fn clear_history(conn: &Connection) -> Result<(), String> {
 // ── Session ───────────────────────────────────────────────────────────────────
 
 pub fn save_session(conn: &Connection, session: &AppSession) -> Result<(), String> {
-    let data = serde_json::to_string(session).map_err(|e| e.to_string())?;
+    let data = vault::seal(
+        conn,
+        "session",
+        "data",
+        "current",
+        &serde_json::to_string(session).map_err(|e| e.to_string())?,
+    )?;
     let now = chrono::Utc::now().timestamp_millis();
     conn.execute(
         "INSERT OR REPLACE INTO session (key, data, saved_at) VALUES ('current', ?1, ?2)",
@@ -389,7 +444,9 @@ pub fn load_session(conn: &Connection) -> Result<Option<AppSession>, String> {
         r.get::<_, String>(0)
     }) {
         Ok(data) => {
-            let session = serde_json::from_str(&data).map_err(|e| e.to_string())?;
+            let session =
+                serde_json::from_str(&vault::unseal(conn, "session", "data", "current", &data)?)
+                    .map_err(|e| e.to_string())?;
             Ok(Some(session))
         }
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -402,7 +459,7 @@ pub fn load_session(conn: &Connection) -> Result<Option<AppSession>, String> {
 pub fn get_requests(conn: &Connection, collection_id: &str) -> Result<Vec<SavedRequest>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT data, group_id, sort_order FROM requests \
+            "SELECT data, group_id, sort_order, id FROM requests \
              WHERE collection_id=?1 ORDER BY sort_order ASC, rowid ASC",
         )
         .map_err(|e| e.to_string())?;
@@ -412,14 +469,16 @@ pub fn get_requests(conn: &Connection, collection_id: &str) -> Result<Vec<SavedR
                 r.get::<_, String>(0)?,
                 r.get::<_, Option<String>>(1)?,
                 r.get::<_, i64>(2)?,
+                r.get::<_, String>(3)?,
             ))
         })
         .map_err(|e| e.to_string())?;
     rows.map(|r| {
         r.map_err(|e| e.to_string())
-            .and_then(|(data, group_id, sort_order)| {
+            .and_then(|(data, group_id, sort_order, id)| {
                 let mut req: SavedRequest =
-                    serde_json::from_str(&data).map_err(|e| e.to_string())?;
+                    serde_json::from_str(&vault::unseal(conn, "requests", "data", &id, &data)?)
+                        .map_err(|e| e.to_string())?;
                 // group_id/sort_order are columns, not part of the JSON blob;
                 // old rows may predate them, so only override when present.
                 if group_id.is_some() || req.group_id.is_some() {
@@ -439,10 +498,18 @@ pub fn get_requests(conn: &Connection, collection_id: &str) -> Result<Vec<SavedR
 }
 
 pub fn create_request(conn: &Connection, req: &SavedRequest) -> Result<(), String> {
-    let data = serde_json::to_string(req).map_err(|e| e.to_string())?;
+    let data = vault::seal(
+        conn,
+        "requests",
+        "data",
+        &req.id,
+        &serde_json::to_string(req).map_err(|e| e.to_string())?,
+    )?;
     conn.execute(
-        "INSERT OR REPLACE INTO requests (id, collection_id, group_id, sort_order, data) \
-         VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO requests (id, collection_id, group_id, sort_order, data) \
+         VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(id) DO UPDATE SET \
+         collection_id=excluded.collection_id, group_id=excluded.group_id, \
+         sort_order=excluded.sort_order, data=excluded.data",
         params![
             req.id,
             req.collection_id,
@@ -470,16 +537,54 @@ pub fn delete_request(conn: &Connection, id: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn delete_requests_for_collection(
+/// Reapply a collection without deleting retained request rows. Their local
+/// examples must survive a pull or an idempotent import with the same IDs.
+pub fn replace_collection_contents(
     conn: &Connection,
-    collection_id: &str,
+    collection: &Collection,
+    groups: &[Group],
+    requests: &[SavedRequest],
 ) -> Result<(), String> {
-    conn.execute(
-        "DELETE FROM requests WHERE collection_id=?1",
-        params![collection_id],
+    replace_collection_and_environment(conn, collection, groups, requests, None)
+}
+
+pub fn replace_collection_and_environment(
+    conn: &Connection,
+    collection: &Collection,
+    groups: &[Group],
+    requests: &[SavedRequest],
+    environment: Option<&AppEnvironment>,
+) -> Result<(), String> {
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let collection_id = &collection.id;
+    tx.execute(
+        "INSERT INTO collections (id,name,created_at) VALUES (?1,?2,?3)
+        ON CONFLICT(id) DO UPDATE SET name=excluded.name",
+        params![collection.id, collection.name, collection.created_at],
     )
     .map_err(|e| e.to_string())?;
-    Ok(())
+    let old_requests = get_requests(&tx, collection_id)?;
+    let old_groups = get_groups(&tx)?;
+    for id in descendant_groups(&old_groups, collection_id, true) {
+        tx.execute("DELETE FROM groups WHERE id=?1", [id])
+            .map_err(|e| e.to_string())?;
+    }
+    for group in groups {
+        create_group(&tx, group)?;
+    }
+    for request in requests {
+        create_request(&tx, request)?;
+    }
+    let incoming: std::collections::HashSet<_> = requests.iter().map(|r| r.id.as_str()).collect();
+    for old in old_requests {
+        if !incoming.contains(old.id.as_str()) {
+            delete_request(&tx, &old.id)?;
+        }
+    }
+    if let Some(environment) = environment {
+        save_environment(&tx, environment)?;
+    }
+    tx.commit().map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -558,5 +663,139 @@ mod group_cascade_tests {
         assert_eq!(groups.len(), 2);
         assert_eq!(groups.iter().find(|g| g.id == a.id).unwrap().sort_order, 5);
         assert_eq!(groups.iter().find(|g| g.id == b.id).unwrap().sort_order, 0);
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+    #[test]
+    fn storage_security_deleted_format_marker_cannot_reauthorize_plaintext() {
+        let dir = std::env::temp_dir().join(format!("rustman-marker-{}", uuid::Uuid::new_v4()));
+        let conn = open(&dir).unwrap();
+        let env = AppEnvironment {
+            id: "env".into(),
+            name: "Test".into(),
+            variables: HashMap::from([("token".into(), "synthetic-original".into())]),
+            is_active: true,
+        };
+        save_environment(&conn, &env).unwrap();
+        conn.execute_batch("DELETE FROM local_vault WHERE name='format'; UPDATE environments SET variables='{\"token\":\"synthetic-injected\"}';").unwrap();
+        drop(conn);
+        assert!(
+            open(&dir).is_err(),
+            "downgrade must not authorize injected plaintext"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn storage_security_legacy_migration_and_tamper_preserve_data() {
+        let dir = std::env::temp_dir().join(format!("rustman-legacy-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rustman.db");
+        let legacy = Connection::open(&path).unwrap();
+        legacy.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE environments (id TEXT PRIMARY KEY, name TEXT NOT NULL, variables TEXT NOT NULL, is_active INTEGER NOT NULL);
+            INSERT INTO environments VALUES ('env','Legacy','{\"token\":\"synthetic-legacy-secret\"}',1);").unwrap();
+        drop(legacy);
+        let conn = open(&dir).unwrap();
+        assert_eq!(
+            get_environments(&conn).unwrap()[0].variables["token"],
+            "synthetic-legacy-secret"
+        );
+        let sealed: String = conn
+            .query_row("SELECT variables FROM environments", [], |r| r.get(0))
+            .unwrap();
+        assert!(!sealed.contains("synthetic-legacy-secret"));
+        conn.execute(
+            "UPDATE environments SET variables='corrupted-ciphertext'",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        assert!(open(&dir).is_err());
+        let raw = Connection::open(&path).unwrap();
+        let preserved: String = raw
+            .query_row("SELECT variables FROM environments", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(preserved, "corrupted-ciphertext");
+        // Restore the exact ciphertext: the original key and format are retained.
+        raw.execute("UPDATE environments SET variables=?1", [&sealed])
+            .unwrap();
+        drop(raw);
+        let conn = open(&dir).unwrap();
+        assert_eq!(
+            get_environments(&conn).unwrap()[0].variables["token"],
+            "synthetic-legacy-secret"
+        );
+        drop(conn);
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let bytes = std::fs::read(entry.unwrap().path()).unwrap();
+            assert!(
+                !bytes
+                    .windows(b"synthetic-legacy-secret".len())
+                    .any(|b| b == b"synthetic-legacy-secret")
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn storage_security_environment_and_history_are_not_plaintext() {
+        let dir = std::env::temp_dir().join(format!("rustman-vault-{}", uuid::Uuid::new_v4()));
+        let conn = open(&dir).unwrap();
+        let secret = "synthetic-at-rest-secret-ไทย-한국-一";
+        let env = AppEnvironment {
+            id: "env".into(),
+            name: "Test".into(),
+            variables: HashMap::from([("token".into(), secret.into())]),
+            is_active: true,
+        };
+        save_environment(&conn, &env).unwrap();
+        let mut req = SavedRequest::new_in("c".into(), "Test".into());
+        req.bearer_token = secret.into();
+        req.url = format!("https://example.test/?key={secret}");
+        create_request(&conn, &req).unwrap();
+        let entry = HistoryEntry {
+            id: "h".into(),
+            timestamp: 0,
+            method: "GET".into(),
+            url: req.url.clone(),
+            status: 200,
+            duration_ms: 0,
+            request: req.clone(),
+        };
+        add_history(&conn, &entry).unwrap();
+        for (table, column) in [
+            ("environments", "variables"),
+            ("requests", "data"),
+            ("history", "url"),
+            ("history", "request_json"),
+        ] {
+            let value: String = conn
+                .query_row(&format!("SELECT {column} FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert!(
+                !value.contains(secret),
+                "plaintext leaked in {table}.{column}"
+            );
+        }
+        assert_eq!(
+            get_environments(&conn).unwrap()[0].variables["token"],
+            secret
+        );
+        assert_eq!(get_history(&conn).unwrap()[0].request.bearer_token, secret);
+        drop(conn);
+        let conn = open(&dir).unwrap();
+        assert_eq!(get_history(&conn).unwrap()[0].url, req.url);
+        drop(conn);
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let bytes = std::fs::read(entry.unwrap().path()).unwrap();
+            assert!(
+                !bytes.windows(secret.len()).any(|b| b == secret.as_bytes()),
+                "plaintext bytes remain on disk"
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -2,6 +2,7 @@
 // its own file, owned by its workstream; this file is not edited again.
 pub mod auth;
 pub mod draft;
+pub mod example;
 pub mod meta;
 pub mod review;
 pub mod secrets;
@@ -12,6 +13,7 @@ use tokio::sync::mpsc;
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    Example(example::ExampleMsg),
     Sidebar(SidebarMsg),
     Request(RequestMsg),
     Response(ResponseMsg),
@@ -44,6 +46,16 @@ pub enum Message {
 pub enum SidebarMsg {
     PanelSelected(SidebarPanel),
     RequestOpened(SavedRequest),
+    /// Leave the collection documentation page.
+    DocsClosed,
+    /// Into the complete documentation (`true`) or back to the Overview.
+    DocsFullToggled(bool),
+    DocsLangSet(crate::services::snippet::Lang),
+    /// A code block's "View more" or an example's Headers tab, by key.
+    DocsToggled(String),
+    /// The example shown for a request id.
+    DocsExampleChosen(String, usize),
+    DocsCopied(String),
     NewCollection,
     RenameCollection {
         id: String,
@@ -61,6 +73,12 @@ pub enum SidebarMsg {
         name: String,
     },
     DeleteCollection(String),
+    /// Ask before deleting every Shift/Ctrl-selected collection.
+    DeleteSelectedCollections,
+    /// Drop the Shift/Ctrl collection selection (Escape).
+    CollectionSelectionCleared,
+    /// Held keyboard modifiers changed (drives Shift/Ctrl-click selection).
+    ModifiersChanged(iced::keyboard::Modifiers),
     DeleteRequest {
         id: String,
         collection_id: String,
@@ -93,8 +111,39 @@ pub enum SidebarMsg {
     CancelRename,
     HistoryEntryOpened(HistoryEntry),
     ClearHistory,
+    CollectionsSectionToggled,
+    CollectionDeleteTextChanged(String),
+    CollectionDeleteCancelled,
+    CollectionDeleteConfirmed,
+    /// Warning accepted: move to the type-`delete` step.
+    CollectionDeleteProceed,
+    /// Ask before deleting a request (sidebar menu).
+    RequestDeleteAsked {
+        id: String,
+        collection_id: String,
+    },
+    RequestDeleteCancelled,
+    RequestDeleteConfirmed,
+    EnvironmentsSectionToggled,
+    EnvironmentOpened(String),
+    EnvironmentPageClosed,
+    EnvironmentCellOpened {
+        environment_id: String,
+        row: usize,
+        value: bool,
+    },
+    EnvironmentCellEdited {
+        token: String,
+        message: iced_code_editor::Message,
+    },
+    EnvironmentCellPageChanged(bool),
+    EnvironmentCellClosed,
     EnvironmentSelected(String),
     EnvironmentCreated,
+    EnvironmentRenameStarted(String),
+    EnvironmentDuplicated(String),
+    EnvironmentExport(String),
+    EnvironmentVariableHover(String, usize, bool),
     EnvironmentDeleted(String),
     EnvironmentToggleEdit(String),
     EnvironmentNameChanged(String, String),
@@ -103,6 +152,18 @@ pub enum SidebarMsg {
     EnvironmentVarValueChanged(String, usize, String),
     EnvironmentVarRemoved(String, usize),
     ToggleCollapsed,
+    /// Collection tree search box.
+    FilterChanged(String),
+    /// Search box inside an open menu (workspaces, open tabs, environments).
+    MenuFilterChanged(String),
+    /// Tab list menu: expand/collapse "Recently closed".
+    RecentlyClosedToggled,
+    SearchMove(isize),
+    SearchConfirm,
+    SearchPick(usize),
+    SearchClose,
+    /// Cursor left a tree row (entering one is `ItemDragOver`).
+    RowHoverEnd(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,16 +184,79 @@ pub enum RequestMsg {
     /// the handler decides per action (see `handle`), which is what lets
     /// huge pastes route to import without ever entering the widget.
     UrlEdited(iced::widget::text_editor::Action),
+    /// An edit in a Headers/Params cell's or an Auth field's editor.
+    FieldEdited(
+        usize,
+        crate::state::tabs::SuggestField,
+        iced::widget::text_editor::Action,
+    ),
+    UrlHovered(Option<iced::Point>),
+    UrlCompletionMoved(i32),
+    UrlCompletionSelected(Option<String>),
+    UrlCompletionDismissed,
+    UrlVariableValueChanged(String),
+    UrlVariableEnvironmentSelected(Option<String>),
+    UrlVariableEnvironmentNameChanged(String),
+    UrlVariableSave,
+    UrlVariableDismissed,
+    TitleChanged(String),
     MethodChanged(String),
     TabSelected(RequestTab),
     // Headers
     HeaderToggled(usize),
     HeaderKeyChanged(usize, String),
     HeaderValueChanged(usize, String),
+    HeaderDescriptionChanged(usize, String),
+    /// Mouse over the body editor (`None` = left it): resolves the
+    /// `{{variable}}` under it for the hover card.
+    BodyHovered(Option<iced::Point>),
+    /// Arrow keys in the body editor's `{{` list (`true` = down).
+    BodyCompletionMoved(bool),
+    /// Enter in that list: apply the highlighted variable.
+    BodyCompletionAccepted,
+    /// A variable was clicked: the `{{name}}` to insert.
+    BodyCompletionPicked(String),
+    /// Escape or a click elsewhere closed the list.
+    BodyCompletionClosed,
+    /// The hover delay of a body `{{variable}}` ran out.
+    VarCardDue(String),
+    /// The mouse entered (`true`) or left a Headers cell.
+    HeaderVarHovered(usize, crate::state::tabs::SuggestField, bool),
+    /// The hover delay of a Headers cell with variables ran out.
+    HeaderVarDue(usize, crate::state::tabs::SuggestField),
+    /// The grace period after the mouse left a Headers cell or its card.
+    VarCardLeaveDue,
+    /// The mouse entered (`true`) or left the variable card.
+    VarCardHover(bool),
+    /// A click inside the card keeps it open until an outside click.
+    VarCardPinned,
+    /// The eye button of a secret-looking variable.
+    VarCardRevealToggled,
+    /// Copy this variable's full value.
+    VarCardCopied(String),
+    /// Escape or an outside click closed the card.
+    VarCardClosed,
     HeaderAdded,
     HeaderRemoved(usize),
+    /// A Headers cell was clicked: open its autocomplete list.
+    HeaderSuggestOpened(usize, crate::state::tabs::SuggestField),
+    /// Escape or a click elsewhere closed the list.
+    HeaderSuggestClosed,
+    /// Arrow keys in the open list (`true` = down).
+    HeaderSuggestMoved(bool),
+    /// Enter in the open list: apply the highlighted suggestion.
+    HeaderSuggestAccepted,
+    /// A suggestion was clicked: the cell's new content.
+    HeaderSuggestionPicked(usize, crate::state::tabs::SuggestField, String),
     HeadersBulkToggle,
     HeadersBulkEdited(iced::widget::text_editor::Action),
+    /// Set (or with "None" remove) the Content-Type header from the
+    /// Presets menu.
+    HeaderPresetApplied(String),
+    /// Remove every header row.
+    HeadersCleared,
+    /// Show or hide the headers the client adds on send (view state).
+    AutoHeadersToggled,
     // Params
     ParamToggled(usize),
     ParamKeyChanged(usize, String),
@@ -147,6 +271,8 @@ pub enum RequestMsg {
     GraphQLVariablesEdited(iced_code_editor::Message),
     FormFieldAdded,
     FormFieldRemoved(usize),
+    /// Enable or disable one form field (disabled ones are not sent).
+    FormFieldToggled(usize),
     FormFieldKeyChanged(usize, String),
     FormFieldValueChanged(usize, String),
     /// Toggle the expanded (paged) editor for a big form value.
@@ -179,9 +305,24 @@ pub enum RequestMsg {
     JwtAlgoChanged(String),
     // Form file upload
     FormFieldTypeToggled(usize),
+    /// Text/File picked in a form row's type menu.
+    FormFieldTypeSet(usize, crate::domain::request::FormFieldType),
+    FormFieldDescriptionChanged(usize, String),
     FormFieldPickFile(usize), // open file dialog for row index
     FormFieldFilePicked(usize, String, String), // index, filename, base64_data
     // Scripts
+    /// Before request / After response on the Scripts rail.
+    ScriptPhaseSelected(crate::state::tabs::ScriptPhase),
+    /// Run the imported script kept as comments: uncomment it.
+    ScriptImportEnabled,
+    /// Arrow keys in the script autocomplete (`true` = down).
+    ScriptCompletionMoved(bool),
+    /// Enter in that list: apply the highlighted item.
+    ScriptCompletionAccepted,
+    /// An item was clicked: the text to insert.
+    ScriptCompletionPicked(String),
+    /// Escape or a click elsewhere closed the list.
+    ScriptCompletionClosed,
     PreRequestScriptEdited(iced_code_editor::Message),
     TestScriptEdited(iced_code_editor::Message),
     // WebSocket
@@ -191,6 +332,8 @@ pub enum RequestMsg {
     WsSend,
     // Tabs
     NewTab,
+    /// New tab pre-filled with `wss://`, which makes it a WebSocket tab.
+    NewWsTab,
     CloseTab(usize),
     CloseCurrentTab,
     ConfirmCloseTab,
@@ -205,6 +348,9 @@ pub enum RequestMsg {
     Undo,
     Redo,
     SaveRequest,
+    /// Save menu "Save as…": the save dialog even for a saved request, so
+    /// the tab is stored as a new request.
+    SaveRequestAs,
     ImportCurl(String),
     ImportHttpie(String),
     /// A command parsed off the UI thread (clipboard/file import, or a large
@@ -220,8 +366,6 @@ pub enum RequestMsg {
     CloseImportDialog,
     ImportFromClipboard,
     ImportClipboardText(Option<String>),
-    ImportFromFile,
-    ImportFileReady(Option<(String, Vec<u8>)>),
     ExportCurl,
     CloseCurlModal,
     CopyCurlToClipboard,
@@ -248,6 +392,8 @@ pub enum RequestTab {
 pub enum ResponseMsg {
     TabSelected(ResponseTab),
     CopyBody,
+    /// Forget this tab's response, back to the empty state.
+    ClearResponse,
     /// Save the raw bytes of the current binary response to a file.
     SaveBody,
     /// Result of `SaveBody`; `Ok` carries the written path.
@@ -255,12 +401,22 @@ pub enum ResponseMsg {
     /// Render the current HTML response in the system browser.
     OpenBodyInBrowser,
     /// Result of `OpenBodyInBrowser`.
-    BodyOpened(Result<(), String>),
+    BodyOpened(Result<crate::services::preview_file::PreviewFile, String>),
     ViewerEdited(iced_code_editor::Message),
     ConsoleEdited(iced::widget::text_editor::Action),
     /// Step the response viewer one page (see `page_starts` in state/tabs).
     ViewerPagePrev,
     ViewerPageNext,
+    /// Toggle soft line wrap in the response viewer.
+    ViewerWrapToggled,
+    /// Body format picked in the response toolbar (JSON, XML, … Raw).
+    BodyLangSelected(crate::state::tabs::BodyLang),
+    /// Preview (rendered HTML / JSON table) on/off.
+    PreviewToggled,
+    /// Expand or collapse a row of the JSON preview table (row path).
+    JsonNodeToggled(String),
+    /// Show or hide one masked Headers/Cookies value (`h:3`, `c:0`).
+    RevealToggled(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
@@ -276,11 +432,23 @@ pub enum ResponseTab {
 
 #[derive(Debug, Clone)]
 pub enum WsMsg {
-    TextFrame(String),
-    Disconnected,
-    Error(String),
+    TextFrame {
+        tab_id: String,
+        connection_id: uuid::Uuid,
+        text: String,
+    },
+    Disconnected {
+        tab_id: String,
+        connection_id: uuid::Uuid,
+    },
+    Error {
+        tab_id: String,
+        connection_id: uuid::Uuid,
+        error: String,
+    },
     Handshake {
         tab_id: String,
+        connection_id: uuid::Uuid,
         sender: mpsc::Sender<String>,
     },
 }
@@ -331,6 +499,7 @@ pub struct RepoSummary {
 
 #[derive(Debug, Clone)]
 pub struct GitView {
+    pub snapshot_error: Option<String>,
     pub summaries: Vec<RepoSummary>,
     pub status: Option<crate::services::vcs::RepoStatus>,
     pub branches: Vec<crate::services::vcs::BranchInfo>,
@@ -343,6 +512,9 @@ pub struct RepoAddPayload {
     pub path: std::path::PathBuf,
     pub remote_url: Option<String>,
     pub collections: Vec<crate::domain::group::ImportedCollection>,
+    pub environments: Vec<crate::domain::environment::AppEnvironment>,
+    /// Import-only source: its working tree is never rewritten.
+    pub protected: bool,
     pub global_script: Option<(String, String)>,
 }
 
@@ -350,6 +522,9 @@ pub struct RepoAddPayload {
 pub struct SyncPayload {
     pub repo_id: String,
     pub collections: Vec<crate::domain::group::ImportedCollection>,
+    pub environments: Vec<crate::domain::environment::AppEnvironment>,
+    /// Import-only source: its working tree is never rewritten.
+    pub protected: bool,
     pub label: String,
     pub global_script: Option<(String, String)>,
 }
@@ -363,16 +538,51 @@ pub enum SaveDialogMsg {
     ParentSelected(String),
     ToggleNewCollection,
     NewCollectionNameChanged(String),
+    /// "Search collections and folders" box.
+    FilterChanged(String),
     Confirm,
 }
 
 // ── Command palette ───────────────────────────────────────────────────────────
 
+/// Global search type filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaletteKind {
+    Requests,
+    Tabs,
+    History,
+    Environments,
+}
+
+impl PaletteKind {
+    pub const ALL: [Self; 4] = [
+        Self::Requests,
+        Self::Tabs,
+        Self::History,
+        Self::Environments,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Requests => "Requests",
+            Self::Tabs => "Open tabs",
+            Self::History => "History",
+            Self::Environments => "Environments",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum PaletteMsg {
     Open,
+    /// Open straight into command mode (query `>`), Ctrl+Shift+P.
+    OpenCommands,
     Close,
     QueryChanged(String),
+    /// Type filter chip; `None` clears it ("Clear all").
+    KindChanged(Option<PaletteKind>),
+    /// Animation frame while the popup eases in or out.
+    Frame(std::time::Instant),
     MoveDown,
     MoveUp,
     Confirm,
@@ -384,12 +594,47 @@ pub enum PaletteMsg {
 #[derive(Debug, Clone)]
 pub enum ImportMsg {
     OpenPostmanDialog,
+    Edited(iced::widget::text_editor::Action),
+    Submit,
+    Clipboard,
+    ClipboardReady(Option<String>),
+    ChooseFiles,
+    ChooseFolder,
+    PathsSelected(Vec<std::path::PathBuf>),
+    ResourcesParsed(Result<Vec<crate::services::import::resources::Resource>, String>),
+    PreviewScheduled {
+        revision: u64,
+        text: String,
+    },
+    PreviewReady {
+        revision: u64,
+        result: Result<Vec<crate::services::import::resources::Resource>, String>,
+    },
+    CollectionNameChanged(String),
+    CreateEnvironmentChanged(bool),
+    Clear,
     OpenExportDialog(String),
     CloseExportDialog,
     ExportCollection(String),
     ExportCollectionJson(String),
-    ExportAllCollections,
     PostmanLoaded(Vec<ImportedCollection>),
+    // ── Import / export collections modal ──
+    ModalOpened(crate::state::collections_modal::ModalTab),
+    ModalClosed,
+    ModalTabSelected(crate::state::collections_modal::ModalTab),
+    ModalFilterChanged(String),
+    PickChooseFolder,
+    PickChooseFiles,
+    /// Scan result: shown folder/file label and one row per file.
+    PickScanned(Result<(String, Vec<crate::services::import::resources::ScanEntry>), String>),
+    PickToggled(usize),
+    PickToggledAll,
+    PickSubmit,
+    ExportToggled(String),
+    ExportToggledAll,
+    ExportFormatChanged(crate::state::collections_modal::ExportFormat),
+    ExportIncludeEnvToggled,
+    ExportSubmit,
     ExportDone(String),
     Error(String),
 }
@@ -398,16 +643,37 @@ pub enum ImportMsg {
 
 #[derive(Debug, Clone)]
 pub enum LayoutMsg {
+    ConsoleToggled,
+    /// The Console's top edge was dragged: its new height.
+    ConsoleResized(f32),
+    /// A pick in the Console's filter menu.
+    ConsoleFilterSet(crate::state::console::ConsoleFilter),
+    /// Empty the Console.
+    ConsoleCleared,
+    /// Copy the whole Console as text.
+    ConsoleCopied,
+    /// Open or close a Console row or section.
+    ConsoleRowToggled(String),
     ZoomIn,
     ZoomOut,
     ZoomReset,
     PanelSplitChanged(u16),
     /// Drag on the sidebar/main-area splitter (issue #53): new sidebar width.
     SidebarWidthChanged(f32),
+    /// Show or hide the right "Code snippet" panel.
+    SnippetToggled,
+    /// Drag on the snippet panel's left edge: new panel width.
+    SnippetWidthChanged(f32),
+    /// Copy the full (unmasked) cURL of the active tab.
+    SnippetCopied,
+    /// Pick the snippet language (mockup `.rb-lang`).
+    SnippetLangChanged(crate::services::snippet::Lang),
 }
 
 #[derive(Debug, Clone)]
 pub enum AppMsg {
+    OpenTerminal,
+    ToastDismissed(String),
     HttpResponse {
         generation: u64,
         result: HttpResult,

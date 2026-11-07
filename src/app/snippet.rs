@@ -1,0 +1,526 @@
+//! The right "Code snippet" panel (mockup `.rightbar`): the active tab as a
+//! cURL command. Built from the same input as Share/Export, cached in
+//! `AppState::snippet` and refreshed after edits — never per frame, since
+//! reading the body editor allocates the whole body.
+
+use crate::{
+    app::AppState,
+    domain::request::BodyType,
+    services::curl::{GenerateCurlInput, generate},
+    services::snippet::Lang,
+    state::tabs::RequestTabState,
+};
+
+/// Bodies past this are cut in the panel; Copy still gets the full command.
+const DISPLAY_CAP: usize = 64 * 1024;
+
+/// Shown in place of credentials in the panel preview.
+pub use crate::services::variables::MASK;
+
+/// Panel width bounds (px).
+pub(crate) const MIN_W: f32 = 220.0;
+pub(crate) const MAX_W: f32 = 720.0;
+
+/// What Send would put on the wire, as `generate` input. `Err` carries a
+/// user-facing reason (e.g. invalid GraphQL variables).
+pub(crate) fn curl_input(tab: &RequestTabState) -> Result<GenerateCurlInput, String> {
+    use crate::domain::request::{FormFieldType, graphql_body};
+    use crate::services::curl::{FormFieldInput, KvPair};
+    let body_text = tab.body_editor.content();
+    let is_graphql = tab.body_type == BodyType::GraphQL;
+    let body = if is_graphql {
+        // Export what would actually be sent, not the raw query, so the
+        // generated command is runnable as-is.
+        let variables = tab.graphql_variables_editor.content();
+        if body_text.trim().is_empty() && variables.trim().is_empty() {
+            None
+        } else {
+            match graphql_body(&body_text, &variables) {
+                Ok(compiled) => Some(compiled),
+                Err(err) => {
+                    return Err(err);
+                }
+            }
+        }
+    } else if tab.body_type == BodyType::UrlEncoded {
+        let pairs: Vec<String> = tab
+            .form_fields
+            .iter()
+            .filter(|f| f.enabled && !f.key.is_empty())
+            .map(|f| format!("{}={}", form_encode(&f.key), form_encode(&f.value)))
+            .collect();
+        (!pairs.is_empty()).then(|| pairs.join("&"))
+    } else if body_text.trim().is_empty() {
+        None
+    } else {
+        Some(body_text)
+    };
+    let mut headers: Vec<KvPair> = tab
+        .headers
+        .iter()
+        .filter(|h| h.enabled && !h.key.is_empty())
+        .map(|h| KvPair {
+            key: h.key.clone(),
+            value: h.value.clone(),
+        })
+        .collect();
+    // The GraphQL body is JSON, and unlike the JSON body type nothing
+    // else here says so — without this curl would send it as form data.
+    if is_graphql
+        && !headers
+            .iter()
+            .any(|h| h.key.eq_ignore_ascii_case("content-type"))
+    {
+        headers.push(KvPair {
+            key: "Content-Type".to_owned(),
+            value: "application/json".to_owned(),
+        });
+    }
+    if tab.body_type == BodyType::UrlEncoded
+        && body.is_some()
+        && !headers
+            .iter()
+            .any(|h| h.key.eq_ignore_ascii_case("content-type"))
+    {
+        headers.push(KvPair {
+            key: "Content-Type".to_owned(),
+            value: "application/x-www-form-urlencoded".to_owned(),
+        });
+    }
+    let form_fields: Vec<FormFieldInput> = if tab.body_type == BodyType::FormData {
+        tab.form_fields
+            .iter()
+            .filter(|f| f.enabled && !f.key.is_empty())
+            .map(|f| FormFieldInput {
+                key: f.key.clone(),
+                value: f.value.clone(),
+                is_file: f.field_type == FormFieldType::File,
+                file_name: f.file_name.clone(),
+            })
+            .collect()
+    } else {
+        vec![]
+    };
+    let api_loc = match tab.api_key_location {
+        crate::domain::request::ApiKeyLocation::Header => None,
+        crate::domain::request::ApiKeyLocation::Query => Some("query".to_owned()),
+    };
+    let input = GenerateCurlInput {
+        method: tab.method.as_str().to_owned(),
+        url: tab.url.clone(),
+        headers,
+        body,
+        form_fields,
+        cookies: vec![],
+        auth_type: tab.auth_type.as_str().to_owned(),
+        bearer_token: if tab.bearer_token.is_empty() {
+            None
+        } else {
+            Some(tab.bearer_token.clone())
+        },
+        basic_user: if tab.basic_user.is_empty() {
+            None
+        } else {
+            Some(tab.basic_user.clone())
+        },
+        basic_pass: if tab.basic_pass.is_empty() {
+            None
+        } else {
+            Some(tab.basic_pass.clone())
+        },
+        api_key_name: if tab.api_key_name.is_empty() {
+            None
+        } else {
+            Some(tab.api_key_name.clone())
+        },
+        api_key_value: if tab.api_key_value.is_empty() {
+            None
+        } else {
+            Some(tab.api_key_value.clone())
+        },
+        api_key_location: api_loc,
+    };
+    Ok(input)
+}
+
+/// `application/x-www-form-urlencoded` encoding of one key or value:
+/// unreserved bytes kept, space as `+`, everything else `%XX`.
+/// Braces stay as they are so `{{var}}` placeholders still resolve.
+fn form_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'*' | b'{' | b'}' => {
+                out.push(b as char)
+            }
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// Literal secrets replaced by [`MASK`]; `{{placeholders}}` are kept, so the
+/// panel reads like the mockup without ever painting a real token.
+fn masked(mut input: GenerateCurlInput) -> GenerateCurlInput {
+    fn hide(v: &mut Option<String>) {
+        if let Some(s) = v {
+            let t = s.trim();
+            let reference = t.strip_prefix("{{").and_then(|s| s.strip_suffix("}}"));
+            let single_reference = reference
+                .is_some_and(|key| !key.trim().is_empty() && !key.contains(['{', '}', '\n', '\r']));
+            if !single_reference {
+                *s = MASK.to_owned();
+            }
+        }
+    }
+    hide(&mut input.bearer_token);
+    hide(&mut input.basic_pass);
+    hide(&mut input.api_key_value);
+    input
+}
+
+/// A saved request as code in `lang` for the documentation page, with
+/// typed credentials masked and `{{variables}}` as written.
+pub(crate) fn doc_snippet(req: &crate::domain::collection::SavedRequest, lang: Lang) -> String {
+    let tab = RequestTabState::from_saved(req);
+    match curl_input(&tab) {
+        Ok(input) => crate::services::snippet::generate(lang, &masked(input)),
+        Err(error) => error,
+    }
+}
+
+/// Full, unmasked cURL command (Share / Export).
+pub(crate) fn command(tab: &RequestTabState) -> Result<String, String> {
+    curl_input(tab).map(|i| generate(&i))
+}
+
+/// Full, unmasked snippet in `lang` (the panel's Copy button).
+pub(crate) fn code(
+    tab: &RequestTabState,
+    lang: Lang,
+    env: Option<&crate::domain::environment::AppEnvironment>,
+) -> Result<String, String> {
+    resolved_input(tab, env, false).map(|i| crate::services::snippet::generate(lang, &i))
+}
+
+fn resolved_input(
+    tab: &RequestTabState,
+    env: Option<&crate::domain::environment::AppEnvironment>,
+    redact: bool,
+) -> Result<GenerateCurlInput, String> {
+    use crate::domain::environment::substitute;
+    let safe_env = env.filter(|_| redact).map(|env| {
+        let mut safe = env.clone();
+        for (key, value) in &mut safe.variables {
+            if crate::services::variables::sensitive(key) {
+                *value = MASK.into();
+            }
+        }
+        safe
+    });
+    let env = safe_env.as_ref().or(env);
+    let resolve = |s: &str| substitute(s, env);
+    let mut input = curl_input(tab)?;
+    input.url = crate::services::http::resolve_url(&input.url, env);
+    for pair in &mut input.headers {
+        pair.key = resolve(&pair.key);
+        pair.value = if redact && crate::services::variables::sensitive(&pair.key) {
+            MASK.into()
+        } else {
+            resolve(&pair.value)
+        };
+    }
+    for field in &mut input.form_fields {
+        field.key = resolve(&field.key);
+        field.value = if redact && crate::services::variables::sensitive(&field.key) {
+            MASK.into()
+        } else {
+            resolve(&field.value)
+        };
+        field.file_name = field.file_name.as_deref().map(resolve);
+    }
+    input.body = input.body.as_deref().map(resolve);
+    if redact {
+        input.url = crate::services::secrets::display_url(&input.url);
+        if tab.body_type == BodyType::UrlEncoded {
+            let pairs: Vec<String> = tab
+                .form_fields
+                .iter()
+                .filter(|f| f.enabled && !f.key.is_empty())
+                .map(|f| {
+                    let key = resolve(&f.key);
+                    let value = if crate::services::variables::sensitive(&key) {
+                        MASK.into()
+                    } else {
+                        resolve(&f.value)
+                    };
+                    format!("{}={}", form_encode(&key), form_encode(&value))
+                })
+                .collect();
+            input.body = (!pairs.is_empty()).then(|| pairs.join("&"));
+        } else if let Some(body) = &mut input.body {
+            *body = match crate::services::secrets::redact_json_fields(body) {
+                Ok(safe) => safe,
+                Err(_) if matches!(tab.body_type, BodyType::Json | BodyType::GraphQL) => {
+                    "[Invalid JSON body hidden; Copy preserves the original]".into()
+                }
+                // Unstructured text has no JSON-field masking contract.
+                Err(_) => body.clone(),
+            };
+        }
+    }
+    input.basic_user = input.basic_user.as_deref().map(resolve);
+    input.api_key_name = input.api_key_name.as_deref().map(resolve);
+    if redact {
+        // Mask original literals and retain only genuine references. Resolving
+        // first loses provenance: a secret can itself look like {{a_variable}}.
+        return Ok(masked(input));
+    }
+    input.bearer_token = input.bearer_token.as_deref().map(resolve);
+    input.basic_pass = input.basic_pass.as_deref().map(resolve);
+    input.api_key_value = input.api_key_value.as_deref().map(resolve);
+    Ok(input)
+}
+
+/// Rebuild the cached panel text for the active tab (no-op while hidden).
+pub(crate) fn refresh(state: &mut AppState) {
+    if !state.snippet_open {
+        return;
+    }
+    let tab = state.tabs.active_tab();
+    state.snippet = if tab.is_websocket() {
+        "WebSocket requests have no code snippet.".to_owned()
+    } else if tab.url.trim().is_empty() && tab.body_type == BodyType::None {
+        String::new()
+    } else {
+        match resolved_input(tab, state.active_env(), true) {
+            Ok(input) => {
+                let mut s = crate::services::snippet::generate(state.snippet_lang, &input);
+                if s.len() > DISPLAY_CAP {
+                    let head = crate::services::format::head_capped(&s, DISPLAY_CAP);
+                    s = format!("{head}\n… (truncated; Copy has the full snippet)");
+                }
+                s
+            }
+            Err(e) => e,
+        }
+    };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn security_snippet_auth_braces_do_not_bypass_masking() {
+        use crate::domain::request::AuthType;
+        use base64::Engine as _;
+        let mut tab = RequestTabState::new();
+        tab.set_url("https://synthetic.invalid/login".into());
+        tab.basic_user = "synthetic-user".into();
+        tab.api_key_name = "X-API-Key".into();
+        let literal = "{{left}}synthetic-auth-marker{{right}}";
+        for auth in [AuthType::Bearer, AuthType::Basic, AuthType::ApiKey] {
+            tab.auth_type = auth.clone();
+            tab.bearer_token = literal.into();
+            tab.basic_pass = literal.into();
+            tab.api_key_value = literal.into();
+            let safe = resolved_input(&tab, None, true).unwrap();
+            let basic_encoded = base64::engine::general_purpose::STANDARD
+                .encode(format!("synthetic-user:{literal}"));
+            for lang in Lang::ALL {
+                let shown = crate::services::snippet::generate(lang, &safe);
+                assert!(
+                    !shown.contains("synthetic-auth-marker") && !shown.contains(&basic_encoded),
+                    "auth {auth:?}, language {lang:?} exposed a credential"
+                );
+            }
+            let raw = resolved_input(&tab, None, false).unwrap();
+            assert_eq!(raw.bearer_token.as_deref(), Some(literal));
+            assert_eq!(raw.basic_pass.as_deref(), Some(literal));
+            assert_eq!(raw.api_key_value.as_deref(), Some(literal));
+        }
+    }
+
+    #[test]
+    fn security_snippet_resolved_auth_cannot_impersonate_a_placeholder() {
+        let mut tab = RequestTabState::new();
+        tab.set_url("https://synthetic.invalid/login".into());
+        tab.auth_type = crate::domain::request::AuthType::Bearer;
+        tab.bearer_token = "{{alias}}".into();
+        let env = crate::domain::environment::AppEnvironment {
+            id: "synthetic".into(),
+            name: "Synthetic".into(),
+            is_active: true,
+            variables: [("alias".into(), "{{synthetic-credential-marker}}".into())].into(),
+        };
+        let input = resolved_input(&tab, Some(&env), true).unwrap();
+        let preview = crate::services::snippet::generate(Lang::Curl, &input);
+        assert!(
+            !preview.contains("synthetic-credential-marker"),
+            "resolved credential was mistaken for an unresolved placeholder"
+        );
+        assert!(
+            code(&tab, Lang::Curl, Some(&env))
+                .unwrap()
+                .contains("synthetic-credential-marker")
+        );
+        assert_eq!(tab.bearer_token, "{{alias}}");
+    }
+
+    #[test]
+    fn security_snippet_incomplete_json_hides_body_but_copy_preserves_it() {
+        let mut tab = RequestTabState::new();
+        tab.set_url("https://synthetic.invalid/login".into());
+        tab.body_type = BodyType::Json;
+        for body in [
+            r#"{"password":"synthetic-json-marker","#,
+            r#"{"outer":{"access_token":"synthetic-json-marker"}} trailing"#,
+        ] {
+            tab.reset_body_editor(body);
+            let input = resolved_input(&tab, None, true).unwrap();
+            for lang in Lang::ALL {
+                let shown = crate::services::snippet::generate(lang, &input);
+                assert!(
+                    !shown.contains("synthetic-json-marker"),
+                    "invalid JSON leaked in {lang:?}"
+                );
+            }
+            assert!(
+                code(&tab, Lang::Curl, None)
+                    .unwrap()
+                    .contains("synthetic-json-marker")
+            );
+            assert_eq!(tab.body_editor.content(), body);
+        }
+    }
+
+    #[test]
+    fn security_snippet_form_password_is_masked_but_explicit_copy_preserves_it() {
+        use crate::domain::request::{FormField, FormFieldType};
+        let mut tab = RequestTabState::new();
+        tab.set_url("https://example.test/login".into());
+        tab.form_fields = vec![FormField {
+            id: "f".into(),
+            key: "password".into(),
+            value: "synthetic-form-password".into(),
+            field_type: FormFieldType::Text,
+            enabled: true,
+            file_name: None,
+            file_data: None,
+            mime_type: None,
+            description: String::new(),
+        }];
+        for body_type in [BodyType::UrlEncoded, BodyType::FormData] {
+            tab.body_type = body_type;
+            let input = resolved_input(&tab, None, true).unwrap();
+            let preview = crate::services::snippet::generate(Lang::Curl, &input);
+            assert!(!preview.contains("synthetic-form-password"));
+            assert!(
+                code(&tab, Lang::Curl, None)
+                    .unwrap()
+                    .contains("synthetic-form-password")
+            );
+            assert_eq!(tab.form_fields[0].value, "synthetic-form-password");
+        }
+    }
+
+    #[test]
+    fn urlencoded_body_is_encoded_with_its_content_type() {
+        assert_eq!(form_encode("a b&c={{x}}"), "a+b%26c%3D{{x}}");
+        let mut tab = RequestTabState::new();
+        tab.set_url("https://x.test/login".into());
+        tab.body_type = BodyType::UrlEncoded;
+        tab.form_fields = vec![crate::domain::request::FormField {
+            id: "1".into(),
+            key: "user".into(),
+            value: "a b".into(),
+            field_type: crate::domain::request::FormFieldType::Text,
+            enabled: true,
+            file_name: None,
+            file_data: None,
+            mime_type: None,
+            description: "ignored".into(),
+        }];
+        let input = curl_input(&tab).unwrap();
+        assert_eq!(input.body.as_deref(), Some("user=a+b"));
+        assert!(
+            input
+                .headers
+                .iter()
+                .any(|h| h.key == "Content-Type" && h.value == "application/x-www-form-urlencoded")
+        );
+        assert!(input.form_fields.is_empty());
+    }
+
+    #[test]
+    fn snippet_resolves_the_active_environment_url() {
+        let dir = std::env::temp_dir().join(format!("rustman-snippet-{}", uuid::Uuid::new_v4()));
+        let (mut state, _) = crate::app::boot::init_at(dir.clone());
+        state.snippet_open = true;
+        state.environments = vec![crate::domain::environment::AppEnvironment {
+            id: "dev".into(),
+            name: "Development".into(),
+            is_active: true,
+            variables: [("base_url".into(), "http://localhost:3001".into())].into(),
+        }];
+        state
+            .tabs
+            .active_tab_mut()
+            .set_url("{{base_url}}/api/v1/products".into());
+        refresh(&mut state);
+        assert!(
+            state
+                .snippet
+                .contains("http://localhost:3001/api/v1/products"),
+            "{}",
+            state.snippet
+        );
+        assert!(!state.snippet.contains("{{base_url}}"));
+        state.environments[0]
+            .variables
+            .insert("base_url".into(), "https://prod.example.com".into());
+        state.environments[0]
+            .variables
+            .insert("api_token".into(), "sk_private_token".into());
+        state
+            .tabs
+            .active_tab_mut()
+            .headers
+            .push(crate::domain::request::KeyValue {
+                id: "auth".into(),
+                key: "Authorization".into(),
+                value: "Bearer {{api_token}}".into(),
+                enabled: true,
+                description: String::new(),
+            });
+        refresh(&mut state);
+        assert!(
+            state
+                .snippet
+                .contains("https://prod.example.com/api/v1/products")
+        );
+        assert!(!state.snippet.contains("sk_private_token"));
+        let copied = code(state.tabs.active_tab(), Lang::Curl, state.active_env()).unwrap();
+        assert!(copied.contains("https://prod.example.com/api/v1/products"));
+        assert!(copied.contains("Bearer sk_private_token"));
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn literal_secrets_are_masked_but_placeholders_stay() {
+        let mut tab = RequestTabState::new();
+        tab.url = "https://api.test/x".into();
+        tab.auth_type = crate::domain::request::AuthType::Bearer;
+        tab.bearer_token = "sk_live_real".into();
+        tab.basic_pass = "{{PASS}}".into();
+        let shown = generate(&masked(curl_input(&tab).unwrap()));
+        assert!(!shown.contains("sk_live_real"), "{shown}");
+        let input = masked(curl_input(&tab).unwrap());
+        assert_eq!(input.bearer_token.as_deref(), Some(MASK));
+        assert_eq!(input.basic_pass.as_deref(), Some("{{PASS}}"));
+        assert!(command(&tab).unwrap().contains("https://api.test/x"));
+    }
+}

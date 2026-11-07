@@ -36,6 +36,23 @@ pub fn collection_rename_input_id(collection_id: &str) -> iced::widget::Id {
 
 #[derive(Debug, Clone)]
 pub struct SidebarState {
+    /// Collections awaiting delete confirmation (empty = no dialog). More
+    /// than one when a Shift/Ctrl multi-selection is deleted at once.
+    pub collection_delete_ids: Vec<String>,
+    /// Collections picked with Ctrl/Shift-click, in sidebar order.
+    pub selected_collections: Vec<String>,
+    /// Last collection clicked without Shift: the start of a Shift range.
+    pub selection_anchor: Option<String>,
+    /// Keyboard modifiers currently held (Shift/Ctrl-click in the tree).
+    pub modifiers: iced::keyboard::Modifiers,
+    pub collection_delete_text: String,
+    /// Second layer of collection deletion: the warning was accepted and
+    /// the type-`delete` box is showing.
+    pub collection_delete_typing: bool,
+    /// Request awaiting a delete confirmation: (request id, collection id).
+    pub request_delete: Option<(String, String)>,
+    pub collections_collapsed: bool,
+    pub environments_collapsed: bool,
     pub panel: SidebarPanel,
     pub expanded: std::collections::HashSet<String>,
     pub selected_request: Option<String>,
@@ -45,6 +62,9 @@ pub struct SidebarState {
     pub group_renaming: Option<String>,
     /// Id of the item being drag-reordered, if any (issue #53).
     pub dragging_item: Option<String>,
+    /// Collection or folder the dragged item lands in on release, when the
+    /// drag is a move rather than a reorder among siblings.
+    pub drop_target: Option<String>,
     /// Id of the tree row whose right-click menu is open, if any.
     pub context_menu: Option<String>,
     /// Last collection pressed + when, for double-click-to-rename.
@@ -53,13 +73,38 @@ pub struct SidebarState {
     /// on every keystroke, so Escape-cancel has to write this back.
     pub rename_backup: Option<RenameBackup>,
     pub env_editing: Option<String>,
+    /// Environment shown in the main workspace; the sidebar tree stays visible.
+    pub environment_page: Option<String>,
     pub env_edit_rows: Vec<(String, String)>,
+    pub env_variable_hover: Option<(String, usize)>,
     pub collapsed: bool,
+    /// Collection tree search box text (not persisted).
+    pub filter: String,
+    /// Search text of the open menu (workspaces, tabs, environments); not
+    /// persisted, cleared whenever a menu opens.
+    pub menu_filter: String,
+    /// Tab list menu: "Recently closed" expanded.
+    pub recently_closed_open: bool,
+    /// Transient local search. Cached per query, never stored in the session.
+    pub search_open: bool,
+    pub search_selected: usize,
+    pub search_hits: Vec<crate::services::search::Hit>,
+    /// Tree row under the cursor; it shows its inline actions (Postman).
+    pub hovered_row: Option<String>,
 }
 
 impl Default for SidebarState {
     fn default() -> Self {
         Self {
+            collection_delete_ids: Vec::new(),
+            selected_collections: Vec::new(),
+            selection_anchor: None,
+            modifiers: iced::keyboard::Modifiers::default(),
+            collection_delete_text: String::new(),
+            collection_delete_typing: false,
+            request_delete: None,
+            collections_collapsed: false,
+            environments_collapsed: false,
             panel: SidebarPanel::Collections,
             expanded: std::collections::HashSet::new(),
             selected_request: None,
@@ -67,12 +112,22 @@ impl Default for SidebarState {
             req_renaming: None,
             group_renaming: None,
             dragging_item: None,
+            drop_target: None,
             context_menu: None,
             last_press: None,
             rename_backup: None,
             env_editing: None,
+            environment_page: None,
             env_edit_rows: Vec::new(),
+            env_variable_hover: None,
             collapsed: false,
+            filter: String::new(),
+            menu_filter: String::new(),
+            recently_closed_open: false,
+            search_open: false,
+            search_selected: 0,
+            search_hits: Vec::new(),
+            hovered_row: None,
         }
     }
 }

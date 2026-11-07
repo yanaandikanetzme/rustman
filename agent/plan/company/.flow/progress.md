@@ -1,23 +1,21 @@
 # Company Plan — Current Progress
 
-Updated: 2026-11-03 (Asia/Jakarta).
+Updated: 2026-11-05 (Asia/Jakarta).
 
 ## Resume checkpoint
 
-- Current scope: wave 0 of `../parallel-work-rules.md`.
-- Active task: none.
-- Completed: baseline green on Windows (zip 9 fix in `update.rs`), app
-  launches; parallel-work rules and 09 design-tokens plan written.
+- Current scope: layout parity 10 t4/t6 plus Postman collection import/export on `ws/10-layout/t4-request-tabs`.
+- Active task: request/response mockup parity (`ced2e85`), Postman data-dump import (`d328714`) and the import/export collections modal (`4797de1`) done; local commits only, no push. Next: merge into local `development`.
+- Completed: Windows baseline/launch green (zip 9 fix); parallel rules and 09 plan written.
 - Wave 0 done: contracts frozen (C11 + D1–D3 in 00), scaffold + CI gate
-  committed locally as `65115de` on `ws/00-contracts/t-scaffold` (not pushed).
+  Local scaffold/CI commit: `65115de` on `ws/00-contracts/t-scaffold` (not pushed).
 - Decisions 2026-11-03 (user): Ctrl+S = local draft; Save = review branch +
   PR to `main` (C12, never push `main`); metadata/flags/notes on unprotected
   branch `rustman/meta` pushed directly; comments on an endpoint with an open
   PR go to that PR (C4); one PR per endpoint.
 - Next: wave 1 is open — 01, 09, 02 t1–5/7, 03 t1–2, 05 t1–4, 07.
 - Blockers: none.
-- Working tree already contains unrelated source/workflow edits. Preserve them;
-  do not infer company-plan completion from modified files alone.
+- Preserve unrelated working-tree edits; modified files do not prove plan completion.
 
 ## Status legend and ownership
 
@@ -25,8 +23,7 @@ Updated: 2026-11-03 (Asia/Jakarta).
 - `[~]` = in progress; an owner has claimed the task and its file scope.
 - `[ ]` = todo; completion is not yet verified, including unaudited work.
 
-Planning completion is separate from implementation completion. Existing code
-may already satisfy part of a todo; audit before implementing it again.
+Planning is separate from implementation; audit existing code before reimplementing todo items.
 Blocked work keeps `[~]` while owned; record its cause and next action. If
 released, return it to `[ ]` and keep the blocker visible in the task details.
 
@@ -46,44 +43,161 @@ unverified. `—` means unclaimed; status is not a claim that code is absent.
 | [ ] | 06 | Secrets / scanner | — | Audit redaction, re-merge and write guards. |
 | [ ] | 07 | Self-update integrity | — | Audit existing verification and tests. |
 | [ ] | 08 | PR / company CI | — | Audit review flow and validator. |
-| [~] | 10 | Layout parity | Claude, 2026-11-04 | Plan `../0-foundation/10-layout-parity.md`. Integration branch is local `development` (00+09+01 merged, master untouched at `14f2d73`). t1 header done (`a488b7f`, merged). Next: t2 request header + URL row on `ws/10-layout/t2-request-header`. |
+| [~] | 10 | Layout parity | Claude, 2026-11-04 | Plan `../0-foundation/10-layout-parity.md`. Integration branch is local `development` (00+09+01 merged, master untouched at `14f2d73`). t1 header (`a488b7f`), t2 request header + URL row (`1a494f2`), seams (`9846277`) and t5 sidebar (`d382c1c`, `dc731ca`, hover actions, then aligned to the updated mockup `0976b17`; sample workspace via `scripts/ui.sh -x`) done and merged. Sidebar is made as close to Postman as possible (user decision 2026-11-04): filter box, `+` menu incl. Folder, import, `⋯`, COLLECTIONS section; full suite 203/195. Sidebar headers/environment rows/selected row and the URL preview line aligned to the updated mockup plus the URL row (method chevron, `{{var}}` highlight, split Send) on `feat/endpoint-examples` (252/244). t4 sub-tabs + Headers/Auth/Body (incl. form-data on the kv table) and t6 response head/toolbar follow the mockup (`ced2e85`, `d328714`); saved tabs show the request name. Collections ⋯ menu opens the mockup's Import/Export modal (`4797de1`): per-file scan with Ready / Needs review / Unsupported / Error rows, Postman v2.1 or Rustman bundle export; full suite 314/306. Next: merge to `development`, t7 fonts. |
 | [X] | 09 | Design tokens | — | `4289b76` on `ws/09-design-tokens/t1-tokens`: Rustman Light/Dark appended, fresh-install default, 5 tests. Fonts deferred; status colors kept global (36 call sites). |
 
 ## Active task details
 
-No active task. For the next task, replace this template with its claim:
+- [X] Claude, 2026-11-05: Postman import/export. Data dumps (`archive.json`
+  index + `collection/` + `environment/`) import with environments,
+  collection variables as an environment, inherited auth (inherit / noauth,
+  v2.0 and v2.1 shapes) and Postman scripts kept as comments for review.
+  The import modal scans a folder or files and rows each file with its own
+  status (v1 = Unsupported, broken JSON = Error, BOM tolerated); only picked
+  rows import. Export writes one `.postman_collection.json` per collection
+  (+ active environment) or one Rustman bundle. Verified by capture against
+  a fixture dump; real-size dry run (100+ collections) parses in under 2 s.
+  Gaps: environment export uses the active environment only; Esc does not
+  close the modal yet.
 
-- Task: `[~]` + workstream ID + ordered-task number + one-sentence scope.
-- Owner: unique worker/session identifier; claimed/updated time with timezone.
-- Files: exact owned files and shared-file edits requiring coordination.
-- Done: only verified outcomes for this task.
-- Remaining: next concrete actions; include unresolved decisions/blockers.
-- Evidence: source/test paths, exact verification commands and results.
-- Resume: the next file/symbol/action; do not paste its contents here.
+- [X] Codex, 2026-11-05: repeated command pastes insert a newline at the end
+  of existing commands, so bodies no longer join directly to the next curl.
+  Ctrl+V and the clipboard button share insertion/selection behavior; large
+  sources append outside the truncated widget. Quoted body text stays intact.
+  Red reproduced six pastes counted as one; updated regression counts six.
+  Small cURL/HTTPie pastes in the URL bar map before newline stripping.
+  Complete commands replace HTTP fields without carrying old auth/body;
+  incomplete commands without a URL preserve the existing request.
+  Review finding reproduced DELETE mutation from missing-URL paste, then fixed
+  in synchronous and background import handlers; review verified the fix.
+  Gates: 302 default / 294 no-default passed, 3 network tests ignored each.
+  File claims released: import/request, resource helper and paste regressions.
+  Current native executable needs rebuilding after closing the running app.
+
+- [X] Codex, 2026-11-05, `ws/10-layout/t4-request-tabs`: batch import and inline editing.
+  Multiple pasted cURL commands retain quoted/multiline payloads and order.
+  Async preview shows request count + editable collection name before import.
+  Same-origin batches offer a new active baseUrl environment; collection and
+  environment persist in one transaction. Single commands still open a tab.
+  Retained text/path sources resume previews after close/reopen; Clear and
+  successful import release them. Stale preview revisions are ignored.
+  Clicking an unresolved URL variable opens an actual DB-save shortcut:
+  choose an existing environment or create a named one; duplicates rejected.
+  Title is editable in the header, updates the tab/draft, and prefills Save.
+  Gates: 296 default / 288 no-default passed, 3 network tests ignored each.
+  Independent review's preview-resume finding fixed with two regressions.
+  Latest changes have parser/state tests; native UI QA has not been repeated.
+  Prior native QA/control stopped on physical Escape. Run the app outside
+  the sandbox: sandbox launch hid clipboard text and could not open AppData
+  storage; user testing resumed via an outside-sandbox launch of 1ae078b.
+  File claims released: import/state/storage/dialog + URL shortcut/title. No push.
+
+- Task: [~] bottom-anchored Environments and hover-only environment actions.
+- Owner: Codex, 2026-11-04; feat/endpoint-examples, existing HEAD 2b00b48.
+- Collections fills spare sidebar height; Environments stays below it even open.
+- Collapsing Collections moves Environments directly below its header.
+- Separate scroll areas; environment rows capped at192px; no shared outer scroll.
+- Atomic: generic sidebar_sections molecule; active/More actions hover-only.
+- Prior main editor/footer, environment menu/auto rows/hover delete preserved.
+- Gates: 251 default / 243 no-default passed; 3 network ignored each.
+- Iced layout test proves lower anchoring at300/700px; Playwright verifies
+  both disclosures,900px viewport,35-item scroll list and active hover visibility.
+- Gallery30/31/32 refreshed;33 shows bottom section. Release build in progress:
+  target/sidebar-anchor-release.log. Native action/typing QA previously stopped
+  by user's physical Escape; no claim of native typing verification.
+- Details: ../0-foundation/sidebar-environments.md; fuzzy-search visual checks
+  and equal-load Postman RAM comparison deferred. Global plans unfinished.
+- 2026-11-04 polish (Claude, user request): section headers share one padded
+  band (10px under the search box, 2px under each label); environment rows use
+  ROW_H with a 2px gap; header hover also covers press. The selected request
+  row is now the neutral square band (mockup 32/33) instead of the accent tint.
+  The URL bar's resolved-URL preview is a muted mono line aligned under the URL
+  text, with no orange chrome strip. Environment workspace tab left unchanged.
+- URL row follows mockup HTML `.url-row`: method column 115px bg-2 with a small
+  chevron (hover bd-2, accent ring when open), mono 13px URL with `{{var}}`
+  highlighted (Tone::Info), "→ Send" + 30px split chevron. The chevron menu
+  holds Import cURL… / Export as cURL, replacing the loose import icon.
+  Section headers: label centred in the 24px band, 10px text, 10px inset.
+  Unused accent `RowFill::Selected` removed. Gates 252/244.
+- Follow-up: method menu restyled per `.combo-menu` (bg-0, bd-2, 6px radius,
+  current item on bg-2, no iced cyan); open picker uses bg-0 without a ring.
+  Tab bar rebuilt per `.tabsbar`/`.tab`: 36px, flat tabs with hairlines,
+  active bg-0 + 2px accent top, plain mono method text, 16px close.
+- Deletion: collection delete is two layers (warning + Delete, then type
+  "delete"), enforced in the handler; request delete asks first (Enter/Esc).
+  Gates 254/246. Visual check of tab bar/menu still pending in the real app.
+- Code snippet panel (mockup rustman-requester-snippet .rightbar), right side:  language dropdown (cURL, HTTP, JS Fetch, Node Axios, Python requests, Go,  Java OkHttp, C# HttpClient, Ruby Net::HTTP, wget) from the same input as  Share; literal secrets masked, {{vars}} kept; Copy gives the full code.  Hide via header icon or footer toggle (closes flush, reopen from the footer
+  toggle only, per user); left edge drags  to resize (220-720px). Open/width/language persist in the session. Cached  in AppState::snippet, refreshed after edits, not per frame. Gates 262/254.
+- Top bar per mockup rustman-requester-workspace `.app-header`: workspace
+  switcher (bookmark icon, UPPERCASE name, chevron) opens a `.ws-menu` with a
+  search box, Create (Git panel), git repos as workspaces (tile, tick on the
+  current one) and View all workspaces; branch chip mono bg-2 pill; search
+  without the Ctrl+P hint; sync chip dot with tinted ring; avatar from the
+  git author initial; bottom hairline only. Popup gained a sticky mode so
+  typing in the menu does not close it.
+- Request header Save is a split button (Save + chevron: Save as…, Commit &
+  sync → Git panel, Discard local changes when a draft exists); Share is an
+  outlined link button. Resolved-URL line under the URL bar removed (not in
+  the mockup, per user). Gates 263/255.
+- Done (`ui/command_palette.rs`): global search popup, near window wide (max
+  1280px, 40px gutter), anchored at the top, no dim; eases in (unroll, 160ms)
+  and out (110ms) via window frames only while animating. Type chips
+  Requests / Open tabs / History / Environments + Clear all; `>` or
+  Ctrl+Shift+P lists app commands with key caps; Ctrl+K and Ctrl+P open it;
+  rows show a method tile (DEL/OPT/PTCH short forms), bold name, muted URL,
+  detail line and relative time. Collections are not listed yet (no "open
+  collection" action); no "Find in workspace" row. Gates 269/261.
+- Original note (user request 2026-11-05, Postman reference): header search like
+  Postman's. The field reads "Search (Ctrl+K)" with the shortcut inside the
+  label and a hover state. Opening it shows a large popup anchored under the
+  top bar (about 1080px wide) with:
+  - a search input with a filter icon on the right;
+  - filter chips (Type, In, By, …) and "Clear all";
+  - command rows with key caps: "Show and run commands >" (Ctrl+Shift+P) and
+    "Find in workspace <NAME>" (Ctrl+Alt+K);
+  - a hairline, then a recently viewed list: a type icon (collection or
+    workspace), a bold name, a muted "workspace · owner" line and a relative
+    time on the right ("1m RECENTLY VIEWED", "12h", "3mo").
+  Rustman version: Ctrl+K opens it from the header field (keep Ctrl+P
+  working), with recent requests/collections/environments from local data.
+  Typing `>` switches to commands, reusing the command palette. Show only
+  filters Rustman can back (Type, In); no visibility/org filters.
+- Done (user request 2026-11-05, Postman reference): two controls at the
+  right end of the tab bar, after `+` (`ui/layout/tab_menus.rs`). Both menus
+  share `sidebar.menu_filter` and the sticky popup (typing keeps them open);
+  "Recently closed" lists saved requests closed this session (newest first,
+  max 10, not persisted) and reopens them; quick look opens the active
+  environment page. Gates 267/259.
+  - Tab list chevron (`⌄`): a popup (about 300px) with a "Search tabs" input
+    (hint Ctrl+Shift+A) and every open tab as a row: method in its colour, the
+    name ellipsized, and an orange dot when the tab is unsaved. Clicking a row
+    switches to that tab. A collapsible "Recently closed" section sits at the
+    bottom (needs a small closed-tabs history).
+  - Environment selector: a bg-2 pill with the active environment name and a
+    chevron, then an icon button for the environment quick look. The dropdown
+    (about 450px) has a "Search" input, "No Environment" (muted), the
+    environments with a tick on the active one (row bg-2), a hairline, and
+    "+ Create new environment".
+  Rustman version: reuse the existing environment state and tab state; keep
+  Ctrl+Shift+A for the tab search.
+- Committed on feat/endpoint-examples at the user's request (for a PR); not pushed.
 
 ## Verification checkpoint
 
-Windows MSVC via `cmd.exe /c`, rustc/cargo 1.99.0, branch
-`feat/company-foundation` at `14f2d73` plus existing working-tree changes.
-
-Re-run 2026-11-03 after fixing `extract_binary` (`src/services/update.rs:347`,
-zip 9 `name()` returns `Result`; Windows-only code, so Linux CI missed it):
-
-- `cargo build`: PASS.
-- `cargo test`: PASS, 139 passed, 0 failed, 3 ignored (live network).
-- `cargo test --no-default-features`: PASS, 131 passed, 0 failed, 3 ignored.
-- App launch: `target\debug\rustman.exe` opens the "Rustman" window, UI
-  renders (empty Collections, New Request tab, response pane), stays running.
-  Manual request/sync flows not exercised.
-- Gap: CI builds Linux only and runs no tests; scaffold PR adds the gate.
+- Latest Windows gate (2026-11-05): 302 default / 294 no-default tests passed;
+  3 live-network tests ignored each. Native QA and exe-lock limits above.
+  Earlier release evidence: target/environment-page-release.log.
+- Historical 2026-11-03 baseline: zip 9 Windows extraction fixed; build and launch
+  passed, tests 139 default / 131 no-default; manual request/sync not exhaustive.
+- CI execution is not proven by local tests; wave 0 scaffold added the test gate.
 
 ## Compact completion record
 
-Keep at most five recent entries. Replace older entries with one durable
-outcome/evidence line; use git history or linked PRs for detailed chronology.
+Keep five recent entries; compact older outcomes and use git history for detail.
 
 | Status | Date | Completed scope | Evidence / limitation |
 |---|---|---|---|
+| [X] | 2026-11-04 | Renderer memory comparison and opt-in software mode | ../0-foundation/memory-optimization.md; local release measured; integration authorized; workload limits above. |
 | [X] | 2026-11-03 | Planning docs: selective reading, API map, reuse policy | `../index.md`, `../api/index.md`, `../api-reuse-rules.md`; docs only. |
 | [X] | 2026-11-03 | Draft review fixes: durable conflicts and merged-tab refresh | `../0-foundation/01-local-drafts.md`, C9; required regressions specified, runtime not implemented. |
 | [X] | 2026-11-03 | Baseline fixed and green; app launches | `src/services/update.rs` zip 9 fix; results above. |

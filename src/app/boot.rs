@@ -13,17 +13,36 @@ use crate::{
 use super::AppState;
 
 pub(crate) fn init() -> (AppState, Task<Message>) {
-    let data_dir = dirs::data_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("rustman");
-    init_at(data_dir)
+    init_at(data_dir_from(std::env::var_os("RUSTMAN_DATA_DIR")))
+}
+
+/// `RUSTMAN_DATA_DIR` points the app at another data folder (UI testing
+/// with sample data, see `scripts/ui.sh`); unset or empty means the user's
+/// normal data dir.
+fn data_dir_from(env: Option<std::ffi::OsString>) -> PathBuf {
+    match env {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => dirs::data_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("rustman"),
+    }
 }
 
 /// Boot from an explicit data directory. `init` passes the user's data dir;
 /// tests pass a throwaway one so they never touch real data.
 pub(crate) fn init_at(data_dir: PathBuf) -> (AppState, Task<Message>) {
+    let (db, storage_error) = match storage::open(&data_dir) {
+        Ok(db) => (Some(db), None),
+        Err(error) => (None, Some(error.to_string())),
+    };
 
-    let db = storage::open(&data_dir).ok();
+    // `RUSTMAN_SAMPLE=1` (scripts/ui.sh -x): example collection for trying
+    // the UI, only into a data folder without collections.
+    if let Some(c) = db.as_ref().filter(|_| super::sample::wanted()) {
+        if let Err(e) = super::sample::seed_if_empty(c) {
+            eprintln!("sample data not created: {e}");
+        }
+    }
 
     let collections = db
         .as_ref()
@@ -74,6 +93,9 @@ pub(crate) fn init_at(data_dir: PathBuf) -> (AppState, Task<Message>) {
     let mut global_pre_request_script = String::new();
     let mut global_test_script = String::new();
     let mut sidebar_width = 200.0;
+    let mut snippet_open = true;
+    let mut snippet_width = crate::state::session::DEFAULT_SNIPPET_WIDTH;
+    let mut snippet_lang = crate::services::snippet::Lang::default();
     #[cfg(feature = "self-update")]
     let mut auto_check_updates = false;
     let mut tls_options = crate::services::http::TlsOptions::default();
@@ -83,6 +105,9 @@ pub(crate) fn init_at(data_dir: PathBuf) -> (AppState, Task<Message>) {
         global_pre_request_script = sess.global_pre_request_script.clone();
         global_test_script = sess.global_test_script.clone();
         sidebar_width = sess.sidebar_width;
+        snippet_open = sess.snippet_open;
+        snippet_width = sess.snippet_width;
+        snippet_lang = crate::services::snippet::Lang::from_key(&sess.snippet_lang);
         #[cfg(feature = "self-update")]
         {
             auto_check_updates = sess.auto_check_updates;
@@ -111,6 +136,7 @@ pub(crate) fn init_at(data_dir: PathBuf) -> (AppState, Task<Message>) {
                 t.body_type = snap.body_type.clone();
                 t.body_editor =
                     make_code_editor(&snap.body, body_syntax_for(&snap.body_type, &snap.body));
+                t.refresh_body_vars();
                 t.graphql_variables_editor = make_code_editor(&snap.graphql_variables, "json");
                 t.form_fields = snap.form_fields;
                 t.auth_type = snap.auth_type;
@@ -156,6 +182,37 @@ pub(crate) fn init_at(data_dir: PathBuf) -> (AppState, Task<Message>) {
     let git_identity = crate::services::vcs::resolve_identity(&data_dir.join("collections"));
 
     let state = AppState {
+        browser_previews: Vec::new(),
+        environment_cell: None,
+        console_open: false,
+        console_height: 280.0,
+        collection_docs: None,
+        console: Default::default(),
+        notification: storage_error.map(|error| crate::state::notifications::Toast {
+            kind: crate::state::notifications::ToastKind::Error,
+            placement: crate::state::notifications::ToastPlacement::BottomRight,
+            id: uuid::Uuid::new_v4().to_string(),
+            title: "Local storage unavailable".into(),
+            detail: Some(format!("{error}. Stored data has not been replaced. Restore access to the OS credential store and restart.")),
+        }),
+        examples: {
+            let mut examples = crate::state::examples::ExamplesState::default();
+            if let Some(db) = &db {
+                match storage::examples::load(db) {
+                    Ok(items) => {
+                        for item in items {
+                            examples
+                                .items
+                                .entry(item.request_id.clone())
+                                .or_default()
+                                .push(item);
+                        }
+                    }
+                    Err(e) => eprintln!("Could not load examples: {e}"),
+                }
+            }
+            examples
+        },
         tabs,
         sidebar,
         collections,
@@ -174,16 +231,21 @@ pub(crate) fn init_at(data_dir: PathBuf) -> (AppState, Task<Message>) {
         palette_open: false,
         palette_query: String::new(),
         palette_selected: 0,
+        palette_kind: None,
+        palette_anim: None,
+        palette_now: std::time::Instant::now(),
         creator_taps: 0,
         creator_unlocked: false,
         parsed_cache: crate::services::cache::ParsedBodyCache::default(),
         export_dialog_collection: None,
         save_dialog_open: false,
+        example_after_save: false,
         save_dialog_name: String::new(),
         save_dialog_collection_id: None,
         save_dialog_group_id: None,
         save_dialog_new_col: false,
         save_dialog_new_col_name: String::new(),
+        save_dialog_filter: String::new(),
         git_log: Vec::new(),
         git_status: None,
         git_branches: Vec::new(),
@@ -199,6 +261,16 @@ pub(crate) fn init_at(data_dir: PathBuf) -> (AppState, Task<Message>) {
         curl_modal_open: false,
         curl_modal_command: String::new(),
         import_dialog_open: false,
+        collections_modal: None,
+        import_editor: iced::widget::text_editor::Content::new(),
+        import_error: None,
+        import_preview: None,
+        import_source: None,
+        import_revision: 0,
+        import_parsing: false,
+        import_truncated: false,
+        import_collection_name: String::new(),
+        import_create_environment: true,
         importing: false,
         git_history_search: String::new(),
         git_user_name: git_identity
@@ -210,6 +282,11 @@ pub(crate) fn init_at(data_dir: PathBuf) -> (AppState, Task<Message>) {
         panel_split: 50,
         sidebar_width,
         horizontal_layout: false,
+        show_auto_headers: false,
+        snippet_open,
+        snippet_width,
+        snippet: String::new(),
+        snippet_lang,
         ui_scale: 1.0,
         #[cfg(feature = "self-update")]
         update: crate::app::UpdateState::Idle,
@@ -250,6 +327,8 @@ pub(crate) fn init_at(data_dir: PathBuf) -> (AppState, Task<Message>) {
     #[cfg(not(feature = "self-update"))]
     let boot_task = Task::none();
 
+    let mut state = state;
+    super::snippet::refresh(&mut state);
     (state, boot_task)
 }
 
@@ -261,5 +340,21 @@ fn parse_sidebar_panel(s: &str) -> crate::message::SidebarPanel {
         "Git" => SidebarPanel::Git,
         "Settings" => SidebarPanel::Settings,
         _ => SidebarPanel::Collections,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn data_dir_env_overrides_only_when_set() {
+        assert_eq!(
+            data_dir_from(Some("D:/sample".into())),
+            PathBuf::from("D:/sample")
+        );
+        let default = data_dir_from(None);
+        assert!(default.ends_with("rustman"));
+        assert_eq!(data_dir_from(Some("".into())), default);
     }
 }

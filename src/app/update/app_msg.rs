@@ -1,5 +1,31 @@
 use iced::Task;
 
+fn open_terminal(dir: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("powershell.exe")
+            .args(["-NoLogo", "-NoExit"])
+            .current_dir(dir)
+            .creation_flags(0x00000010)
+            .spawn()?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .args(["-a", "Terminal"])
+            .arg(dir)
+            .spawn()?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("x-terminal-emulator")
+            .current_dir(dir)
+            .spawn()?;
+    }
+    Ok(())
+}
+
 use crate::app::AppState;
 use crate::app::session::persist_session;
 use crate::domain::history::HistoryEntry;
@@ -16,6 +42,20 @@ const PREVIEW_BYTE_LIMIT: usize = 32 * 1024 * 1024;
 
 pub(super) fn handle(state: &mut AppState, msg: AppMsg) -> Task<Message> {
     match msg {
+        AppMsg::OpenTerminal => {
+            if let Err(error) = open_terminal(&state.data_dir) {
+                state.status_message = Some(format!("Could not open terminal: {error}"));
+            }
+        }
+        AppMsg::ToastDismissed(id) => {
+            if state
+                .notification
+                .as_ref()
+                .is_some_and(|toast| toast.id == id)
+            {
+                state.notification = None;
+            }
+        }
         AppMsg::HttpResponse { generation, result } => {
             if let Some(tab) = state.tabs.tabs.iter_mut().find(|t| t.id == result.tab_id) {
                 if !tab.jobs.is_current(JobKind::Request, generation) {
@@ -23,6 +63,10 @@ pub(super) fn handle(state: &mut AppState, msg: AppMsg) -> Task<Message> {
                 }
                 tab.is_loading = false;
                 tab.parsed_json = None;
+                tab.json_open.clear();
+                tab.revealed_response.clear();
+                tab.body_lang = None;
+                tab.body_preview = None;
                 tab.viewer_processing = true;
                 tab.response = Some(result.response.clone());
 
@@ -124,6 +168,13 @@ pub(super) fn handle(state: &mut AppState, msg: AppMsg) -> Task<Message> {
                     }
                 }
 
+                crate::app::console::record_response(
+                    state,
+                    &tab_id,
+                    &result.response,
+                    &test_logs,
+                    test_error.as_deref(),
+                );
                 if let Some(t) = state.tabs.tabs.iter_mut().find(|t| t.id == tab_id) {
                     t.test_results = test_results;
                     t.script_error = test_error;
@@ -200,10 +251,7 @@ pub(super) fn handle(state: &mut AppState, msg: AppMsg) -> Task<Message> {
                     if let Some(t) = state.tabs.tabs.iter_mut().find(|t| t.id == tab_id) {
                         t.parsed_json = Some(cached_clone);
                         t.set_viewer_content(&display, true);
-                        t.html_fallback_text = t
-                            .response
-                            .as_ref()
-                            .and_then(crate::services::format::html_preview_text);
+                        t.refresh_html_preview();
                         t.viewer_processing = false;
                         t.jobs.cancel(JobKind::Parse);
                     }
@@ -267,10 +315,7 @@ pub(super) fn handle(state: &mut AppState, msg: AppMsg) -> Task<Message> {
                     }
                     tab.parsed_json = parsed_json.map(|b| *b);
                     tab.set_viewer_content(&content_text, is_json);
-                    tab.html_fallback_text = tab
-                        .response
-                        .as_ref()
-                        .and_then(crate::services::format::html_preview_text);
+                    tab.refresh_html_preview();
                     tab.viewer_processing = false;
                 }
             }

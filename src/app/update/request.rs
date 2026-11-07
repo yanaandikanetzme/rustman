@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::app::AppState;
 use crate::app::request_ops::{format_body, save_request, send_request};
 use crate::app::session::persist_session;
-use crate::consts::{IMPORT_FILE_LIMIT, PASTE_GUARD_LEN, URL_GUARD_LEN};
+use crate::consts::{PASTE_GUARD_LEN, URL_GUARD_LEN};
 use crate::domain::request::{BodyType, sync_params_from_url, sync_url_from_params};
 use crate::jobs::JobKind;
 use crate::message::{AppMsg, FormatTarget, Message, RequestMsg};
@@ -27,9 +27,125 @@ const TAB_DRAG_ENABLED: bool = false;
 const ASYNC_IMPORT_LEN: usize = 256 * 1024;
 
 pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
+    if matches!(
+        &msg,
+        RequestMsg::UrlHovered(_)
+            | RequestMsg::UrlCompletionMoved(_)
+            | RequestMsg::UrlCompletionSelected(_)
+            | RequestMsg::UrlCompletionDismissed
+            | RequestMsg::UrlVariableValueChanged(_)
+            | RequestMsg::UrlVariableEnvironmentSelected(_)
+            | RequestMsg::UrlVariableEnvironmentNameChanged(_)
+            | RequestMsg::UrlVariableSave
+            | RequestMsg::UrlVariableDismissed
+    ) {
+        return handle_url_variables(state, msg);
+    }
+    if let RequestMsg::AutoHeadersToggled = msg {
+        state.show_auto_headers = !state.show_auto_headers;
+        return Task::none();
+    }
+    if matches!(
+        &msg,
+        RequestMsg::HeaderKeyChanged(..)
+            | RequestMsg::HeaderValueChanged(..)
+            | RequestMsg::HeaderRemoved(_)
+            | RequestMsg::ParamKeyChanged(..)
+            | RequestMsg::ParamValueChanged(..)
+            | RequestMsg::ParamRemoved(_)
+            | RequestMsg::TabSelected(_)
+    ) {
+        state.tabs.active_tab_mut().var_card = None;
+    }
+    if matches!(
+        &msg,
+        RequestMsg::ScriptPhaseSelected(_)
+            | RequestMsg::ScriptImportEnabled
+            | RequestMsg::ScriptCompletionMoved(_)
+            | RequestMsg::ScriptCompletionAccepted
+            | RequestMsg::ScriptCompletionPicked(_)
+            | RequestMsg::ScriptCompletionClosed
+    ) {
+        return handle_script_ui(state, msg);
+    }
+    if matches!(
+        &msg,
+        RequestMsg::BodyHovered(_)
+            | RequestMsg::VarCardDue(_)
+            | RequestMsg::VarCardHover(_)
+            | RequestMsg::VarCardPinned
+            | RequestMsg::VarCardRevealToggled
+            | RequestMsg::VarCardCopied(_)
+            | RequestMsg::VarCardClosed
+            | RequestMsg::HeaderVarHovered(..)
+            | RequestMsg::HeaderVarDue(..)
+            | RequestMsg::VarCardLeaveDue
+    ) {
+        return handle_var_card(state, msg);
+    }
+    if matches!(
+        &msg,
+        RequestMsg::BodyCompletionMoved(_)
+            | RequestMsg::BodyCompletionAccepted
+            | RequestMsg::BodyCompletionPicked(_)
+            | RequestMsg::BodyCompletionClosed
+    ) {
+        return handle_body_completion(state, msg);
+    }
+    if matches!(
+        &msg,
+        RequestMsg::HeaderSuggestOpened(..)
+            | RequestMsg::HeaderSuggestClosed
+            | RequestMsg::HeaderSuggestMoved(_)
+            | RequestMsg::HeaderSuggestAccepted
+            | RequestMsg::HeaderSuggestionPicked(..)
+    ) {
+        return handle_header_suggest(state, msg);
+    }
     let tab = state.tabs.active_tab_mut();
     record_undo(tab, &msg);
     match msg {
+        RequestMsg::UrlHovered(_)
+        | RequestMsg::UrlCompletionMoved(_)
+        | RequestMsg::UrlCompletionSelected(_)
+        | RequestMsg::UrlCompletionDismissed
+        | RequestMsg::UrlVariableValueChanged(_)
+        | RequestMsg::UrlVariableEnvironmentSelected(_)
+        | RequestMsg::UrlVariableEnvironmentNameChanged(_)
+        | RequestMsg::UrlVariableSave
+        | RequestMsg::UrlVariableDismissed
+        | RequestMsg::AutoHeadersToggled
+        | RequestMsg::BodyHovered(_)
+        | RequestMsg::VarCardDue(_)
+        | RequestMsg::VarCardHover(_)
+        | RequestMsg::VarCardPinned
+        | RequestMsg::VarCardRevealToggled
+        | RequestMsg::VarCardCopied(_)
+        | RequestMsg::VarCardClosed
+        | RequestMsg::HeaderVarHovered(..)
+        | RequestMsg::HeaderVarDue(..)
+        | RequestMsg::VarCardLeaveDue
+        | RequestMsg::ScriptPhaseSelected(_)
+        | RequestMsg::ScriptImportEnabled
+        | RequestMsg::ScriptCompletionMoved(_)
+        | RequestMsg::ScriptCompletionAccepted
+        | RequestMsg::ScriptCompletionPicked(_)
+        | RequestMsg::ScriptCompletionClosed
+        | RequestMsg::BodyCompletionMoved(_)
+        | RequestMsg::BodyCompletionAccepted
+        | RequestMsg::BodyCompletionPicked(_)
+        | RequestMsg::BodyCompletionClosed
+        | RequestMsg::HeaderSuggestOpened(..)
+        | RequestMsg::HeaderSuggestClosed
+        | RequestMsg::HeaderSuggestMoved(_)
+        | RequestMsg::HeaderSuggestAccepted
+        | RequestMsg::HeaderSuggestionPicked(..) => unreachable!("handled above"),
+        RequestMsg::TitleChanged(value) => {
+            if tab.title != value {
+                tab.title = value;
+                tab.modified = true;
+            }
+        }
         RequestMsg::Undo => {
             if let Some(prev) = tab.undo.pop() {
                 tab.redo.push(tab.edit_snapshot());
@@ -63,8 +179,24 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
             tab.modified = true;
         }
         RequestMsg::UrlEdited(action) => {
+            tab.url_hover = None;
             use iced::widget::text_editor::{Action as UrlAction, Edit as UrlEdit};
             match action {
+                UrlAction::Click(point) => {
+                    tab.url_editor.perform(UrlAction::Click(point));
+                    let key = crate::services::variables::variable_at(
+                        &tab.url,
+                        tab.url_editor.cursor().position.column,
+                    );
+                    tab.url_variable_draft = None;
+                    if let Some(key) = key.filter(|key| !key.is_empty()) {
+                        open_url_variable(state, key);
+                        if state.tabs.active_tab().url_variable_draft.is_some() {
+                            return iced::widget::operation::focus("url-variable-value");
+                        }
+                    }
+                    return Task::none();
+                }
                 // The bar is single-line by construction: Enter never lands
                 // (previously a no-op without `on_submit`, same as now).
                 UrlAction::Edit(UrlEdit::Enter) => return Task::none(),
@@ -86,6 +218,19 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
                     };
                 }
                 UrlAction::Edit(UrlEdit::Paste(text)) => {
+                    // Detect command pastes before stripping line breaks: the
+                    // parser needs shell continuations and quoted bodies intact.
+                    match classify_pasted_command(&text) {
+                        PastedCommand::Curl => {
+                            return handle(state, RequestMsg::ImportCurl(text.to_string()));
+                        }
+                        PastedCommand::Httpie => {
+                            return handle(state, RequestMsg::ImportHttpie(text.to_string()));
+                        }
+                        PastedCommand::Other => {}
+                    }
+                    tab.url_completion_open = true;
+                    tab.url_completion_selected = 0;
                     // URLs are single-line: drop raw line breaks (a trailing
                     // newline from terminal copies is the common case) rather
                     // than growing the bar.
@@ -102,12 +247,38 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
                     // content edits flow on to keep params, undo and dirty in
                     // step — exactly what `on_input` used to drive.
                     if edits {
+                        tab.url_variable_draft = None;
+                        tab.url_completion_open = true;
+                        tab.url_completion_selected = 0;
                         let new_url = tab.url_editor.text();
                         return handle(state, RequestMsg::UrlChanged(new_url));
                     }
                     return Task::none();
                 }
             }
+        }
+        RequestMsg::FieldEdited(row, field, action) => {
+            use iced::widget::text_editor::{Action, Edit};
+            let action = match action {
+                // One line: Enter and Tab never change the text.
+                Action::Edit(Edit::Enter | Edit::Indent | Edit::Unindent) => {
+                    return Task::none();
+                }
+                Action::Edit(Edit::Paste(text)) => Action::Edit(Edit::Paste(Arc::new(
+                    text.replace("\r\n", "").replace(['\r', '\n'], ""),
+                ))),
+                action => action,
+            };
+            let edits = url_action_edits_content(&action);
+            let Some(editor) = tab.field_editors.get_mut(&(row, field)) else {
+                return Task::none();
+            };
+            editor.perform(action);
+            if !edits {
+                return Task::none();
+            }
+            let value = editor.text();
+            return handle(state, field_edit(row, field, value));
         }
         RequestMsg::MethodChanged(v) => {
             if let Ok(m) = v.parse() {
@@ -124,6 +295,51 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
                 tab.modified = true;
             }
             let task = tab.body_editor.update(&msg);
+            if content_changed {
+                tab.refresh_body_vars();
+            }
+            match &msg {
+                iced_code_editor::Message::MouseClick(press) => {
+                    tab.body_dragging = true;
+                    tab.body_press = tab.body_pointer.map(|pointer| (pointer, *press));
+                }
+                iced_code_editor::Message::MouseDrag(to) => {
+                    let moved = tab
+                        .body_press
+                        .is_some_and(|(_, press)| press.distance(*to) > CLICK_SLOP);
+                    if moved {
+                        tab.body_press = None;
+                    }
+                }
+                iced_code_editor::Message::MouseRelease => tab.body_dragging = false,
+                _ => {}
+            }
+            // These move the text or the caret away from the card's anchor.
+            if content_changed
+                || matches!(
+                    &msg,
+                    iced_code_editor::Message::MouseClick(_)
+                        | iced_code_editor::Message::DoubleClick(_)
+                        | iced_code_editor::Message::TripleClick(_)
+                        | iced_code_editor::Message::Scrolled(_)
+                        | iced_code_editor::Message::HorizontalScrolled(_)
+                )
+            {
+                tab.body_hover = None;
+                tab.var_card = None;
+            }
+            if matches!(&msg, iced_code_editor::Message::MouseRelease)
+                && let Some((pointer, _)) = tab.body_press.take()
+            {
+                open_body_card(tab, pointer, true);
+            }
+            match crate::state::tabs::completion_effect(&msg) {
+                crate::state::tabs::CompletionEffect::Refresh => {
+                    tab.refresh_body_completion(state.environments.iter().find(|e| e.is_active));
+                }
+                crate::state::tabs::CompletionEffect::Close => tab.body_completion = None,
+                crate::state::tabs::CompletionEffect::Keep => {}
+            }
             // Keep the editor's language in step with what the buffer now holds.
             //
             // The syntax is otherwise fixed at construction, so pasting or typing
@@ -164,22 +380,32 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
             if editor_message_edits_content(&msg) {
                 tab.modified = true;
             }
-            return tab
+            let task = tab
                 .pre_request_editor
                 .update(&msg)
                 .map(|m| Message::Request(RequestMsg::PreRequestScriptEdited(m)));
+            after_script_edit(tab, &msg);
+            return task;
         }
         RequestMsg::TestScriptEdited(msg) => {
             if editor_message_edits_content(&msg) {
                 tab.modified = true;
             }
-            return tab
+            let task = tab
                 .test_editor
                 .update(&msg)
                 .map(|m| Message::Request(RequestMsg::TestScriptEdited(m)));
+            after_script_edit(tab, &msg);
+            return task;
         }
         RequestMsg::NewTab => {
             state.tabs.new_tab();
+            persist_session(state);
+            return Task::none();
+        }
+        RequestMsg::NewWsTab => {
+            state.tabs.new_tab();
+            state.tabs.active_tab_mut().set_url("wss://".to_owned());
             persist_session(state);
             return Task::none();
         }
@@ -247,7 +473,16 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
             tab.modified = true;
         }
         RequestMsg::HeaderRemoved(i) => {
+            tab.header_suggest = None;
             tab.headers.remove(i);
+            tab.modified = true;
+        }
+        RequestMsg::HeaderPresetApplied(value) => {
+            apply_content_type_preset(&mut tab.headers, &value);
+            tab.modified = true;
+        }
+        RequestMsg::HeadersCleared => {
+            tab.headers.clear();
             tab.modified = true;
         }
         RequestMsg::HeaderToggled(i) => {
@@ -257,9 +492,16 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
         RequestMsg::HeaderKeyChanged(i, v) => {
             tab.headers[i].key = v;
             tab.modified = true;
+            open_suggest(tab, i, crate::state::tabs::SuggestField::Key);
         }
         RequestMsg::HeaderValueChanged(i, v) => {
             tab.headers[i].value = v;
+            tab.modified = true;
+            open_suggest(tab, i, crate::state::tabs::SuggestField::Value);
+        }
+        RequestMsg::HeaderDescriptionChanged(i, v) => {
+            tab.header_suggest = None;
+            tab.headers[i].description = v;
             tab.modified = true;
         }
         RequestMsg::ParamAdded => {
@@ -284,12 +526,14 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
             let url = sync_url_from_params(&tab.url, &tab.params);
             tab.set_url(url);
             tab.modified = true;
+            open_suggest(tab, i, crate::state::tabs::SuggestField::ParamKey);
         }
         RequestMsg::ParamValueChanged(i, v) => {
             tab.params[i].value = v;
             let url = sync_url_from_params(&tab.url, &tab.params);
             tab.set_url(url);
             tab.modified = true;
+            open_suggest(tab, i, crate::state::tabs::SuggestField::ParamValue);
         }
         RequestMsg::HeadersBulkToggle => {
             if let Some(content) = tab.headers_bulk.take() {
@@ -312,7 +556,7 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
             if let Some(content) = tab.params_bulk.take() {
                 tab.params = parse_bulk_kv(&content.text(), true);
                 let url = sync_url_from_params(&tab.url, &tab.params);
-            tab.set_url(url);
+                tab.set_url(url);
             } else {
                 let text = serialize_bulk_kv(&tab.params);
                 tab.params_bulk = Some(iced::widget::text_editor::Content::with_text(&text));
@@ -325,29 +569,54 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
                 let text = content.text();
                 tab.params = parse_bulk_kv(&text, true);
                 let url = sync_url_from_params(&tab.url, &tab.params);
-            tab.set_url(url);
+                tab.set_url(url);
                 tab.modified = true;
             }
         }
         RequestMsg::BearerTokenChanged(v) => {
             tab.bearer_token = v;
             tab.modified = true;
+            open_suggest(
+                tab,
+                0,
+                crate::state::tabs::SuggestField::Auth(crate::state::tabs::AuthField::Bearer),
+            );
         }
         RequestMsg::BasicUserChanged(v) => {
             tab.basic_user = v;
             tab.modified = true;
+            open_suggest(
+                tab,
+                0,
+                crate::state::tabs::SuggestField::Auth(crate::state::tabs::AuthField::BasicUser),
+            );
         }
         RequestMsg::BasicPassChanged(v) => {
             tab.basic_pass = v;
             tab.modified = true;
+            open_suggest(
+                tab,
+                0,
+                crate::state::tabs::SuggestField::Auth(crate::state::tabs::AuthField::BasicPass),
+            );
         }
         RequestMsg::ApiKeyNameChanged(v) => {
             tab.api_key_name = v;
             tab.modified = true;
+            open_suggest(
+                tab,
+                0,
+                crate::state::tabs::SuggestField::Auth(crate::state::tabs::AuthField::ApiKeyName),
+            );
         }
         RequestMsg::ApiKeyValueChanged(v) => {
             tab.api_key_value = v;
             tab.modified = true;
+            open_suggest(
+                tab,
+                0,
+                crate::state::tabs::SuggestField::Auth(crate::state::tabs::AuthField::ApiKeyValue),
+            );
         }
         RequestMsg::AuthTypeChanged(v) => {
             if let Ok(a) = v.parse() {
@@ -360,14 +629,29 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
         RequestMsg::CookieStringChanged(v) => {
             tab.cookie_string = v;
             tab.modified = true;
+            open_suggest(
+                tab,
+                0,
+                crate::state::tabs::SuggestField::Auth(crate::state::tabs::AuthField::Cookie),
+            );
         }
         RequestMsg::JwtSecretChanged(v) => {
             tab.jwt_secret = v;
             tab.modified = true;
+            open_suggest(
+                tab,
+                0,
+                crate::state::tabs::SuggestField::Auth(crate::state::tabs::AuthField::JwtSecret),
+            );
         }
         RequestMsg::JwtSubjectChanged(v) => {
             tab.jwt_subject = v;
             tab.modified = true;
+            open_suggest(
+                tab,
+                0,
+                crate::state::tabs::SuggestField::Auth(crate::state::tabs::AuthField::JwtSubject),
+            );
         }
         RequestMsg::JwtAlgoChanged(v) => {
             tab.jwt_algo = v;
@@ -382,6 +666,22 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
                     } else {
                         FormFieldType::Text
                     };
+                tab.modified = true;
+            }
+        }
+        RequestMsg::FormFieldTypeSet(i, kind) => {
+            state.sidebar.context_menu = None;
+            let tab = state.tabs.active_tab_mut();
+            if let Some(f) = tab.form_fields.get_mut(i)
+                && f.field_type != kind
+            {
+                f.field_type = kind;
+                tab.modified = true;
+            }
+        }
+        RequestMsg::FormFieldDescriptionChanged(i, v) => {
+            if let Some(f) = tab.form_fields.get_mut(i) {
+                f.description = v;
                 tab.modified = true;
             }
         }
@@ -419,12 +719,15 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
         }
         RequestMsg::WsMessageChanged(v) => tab.ws.draft = v,
         RequestMsg::WsConnect => {
+            tab.ws.connection_id = Some(uuid::Uuid::new_v4());
+            tab.ws.outgoing_tx = None;
             tab.ws.url = tab.url.clone();
             tab.ws.connecting = true;
             tab.ws.connected = false;
-            tab.ws.messages.clear();
+            tab.ws.clear_messages();
         }
         RequestMsg::WsDisconnect => {
+            tab.ws.connection_id = None;
             tab.ws.outgoing_tx = None;
             tab.ws.connected = false;
             tab.ws.connecting = false;
@@ -432,7 +735,7 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
         RequestMsg::WsSend => {
             if let Some(tx) = tab.ws.outgoing_tx.clone() {
                 let msg = std::mem::take(&mut tab.ws.draft);
-                tab.ws.messages.push(crate::state::tabs::WsMessage {
+                tab.ws.push_message(crate::state::tabs::WsMessage {
                     text: msg.clone(),
                     is_outgoing: true,
                 });
@@ -450,7 +753,13 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
                 state.importing = true;
                 return parse_command_off_thread(cmd, curl::parse);
             }
-            apply_parsed_command(tab, curl::parse(&cmd), cmd.len());
+            let parsed = curl::parse(&cmd);
+            if !command_has_url(&parsed) {
+                state.status_message =
+                    Some("The command needs a URL. Nothing was imported.".into());
+                return Task::none();
+            }
+            apply_parsed_command(tab, parsed, cmd.len());
         }
         RequestMsg::ImportHttpie(cmd) => {
             if cmd.len() > ASYNC_IMPORT_LEN {
@@ -458,10 +767,21 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
                 state.importing = true;
                 return parse_command_off_thread(cmd, crate::services::import::httpie::parse);
             }
-            apply_parsed_command(tab, crate::services::import::httpie::parse(&cmd), cmd.len());
+            let parsed = crate::services::import::httpie::parse(&cmd);
+            if !command_has_url(&parsed) {
+                state.status_message =
+                    Some("The command needs a URL. Nothing was imported.".into());
+                return Task::none();
+            }
+            apply_parsed_command(tab, parsed, cmd.len());
         }
         RequestMsg::ImportCommandParsed { parsed, cmd_len } => {
             state.importing = false;
+            if !command_has_url(&parsed) {
+                state.status_message =
+                    Some("The command needs a URL. Nothing was imported.".into());
+                return Task::none();
+            }
             state.status_message = Some("Command imported.".to_owned());
             apply_parsed_command(tab, parsed, cmd_len);
         }
@@ -472,7 +792,7 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
             ));
         }
         RequestMsg::OpenImportDialog => {
-            state.import_dialog_open = true;
+            return super::import::handle(state, crate::message::ImportMsg::OpenPostmanDialog);
         }
         RequestMsg::CloseImportDialog => {
             state.import_dialog_open = false;
@@ -492,53 +812,12 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
             };
             return import_pasted_text(state, text);
         }
-        RequestMsg::ImportFromFile => {
-            state.import_dialog_open = false;
-            state.importing = true;
-            state.status_message = Some("Choose a file holding the command…".to_owned());
-            return Task::perform(
-                async move {
-                    let file = rfd::AsyncFileDialog::new()
-                        .set_title("Import curl / HTTPie command")
-                        .pick_file()
-                        .await;
-                    match file {
-                        Some(f) => Some((f.file_name(), f.read().await)),
-                        None => None,
-                    }
-                },
-                |res| Message::Request(RequestMsg::ImportFileReady(res)),
-            );
-        }
-        RequestMsg::ImportFileReady(res) => {
-            let Some((name, bytes)) = res else {
-                state.importing = false;
-                state.status_message = None;
-                return Task::none();
-            };
-            if bytes.len() > IMPORT_FILE_LIMIT {
-                state.importing = false;
-                state.status_message = Some(format!(
-                    "{name} is {} — past the {} import limit.",
-                    human_size(bytes.len()),
-                    human_size(IMPORT_FILE_LIMIT),
-                ));
-                return Task::none();
-            }
-            match String::from_utf8(bytes) {
-                Ok(text) => return import_pasted_text(state, text),
-                Err(_) => {
-                    state.importing = false;
-                    state.status_message =
-                        Some(format!("{name} is not valid text — nothing imported."));
-                    return Task::none();
-                }
-            }
-        }
         RequestMsg::SaveRequest => {
             let tab = state.tabs.active_tab();
             if tab.saved_as.is_none() {
-                let name = if tab.url.is_empty() {
+                let name = if tab.url.is_empty()
+                    || !matches!(tab.title.trim(), "" | "New Request" | "Untitled Request")
+                {
                     tab.title.clone()
                 } else {
                     tab.url.clone()
@@ -550,6 +829,20 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
                 return Task::none();
             }
             return save_request(state);
+        }
+        RequestMsg::SaveRequestAs => {
+            // The dialog's Confirm always stores a new request, so the open
+            // one stays as it was. Default to the tab's current collection.
+            let tab = state.tabs.active_tab();
+            state.save_dialog_name = tab.title.clone();
+            state.save_dialog_collection_id = tab
+                .saved_as
+                .as_ref()
+                .map(|(c, _)| c.clone())
+                .or_else(|| state.collections.first().map(|c| c.id.clone()));
+            state.save_dialog_group_id = None;
+            state.save_dialog_open = true;
+            return Task::none();
         }
         RequestMsg::FormatBody => {
             let text = tab.body_editor.content();
@@ -565,105 +858,13 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
             tab.body_editor.set_indent_style(style);
         }
         RequestMsg::ExportCurl => {
-            use crate::domain::request::{FormFieldType, graphql_body};
-            use crate::services::curl::{FormFieldInput, GenerateCurlInput, KvPair, generate};
-            let body_text = tab.body_editor.content();
-            let is_graphql = tab.body_type == BodyType::GraphQL;
-            let body = if is_graphql {
-                // Export what would actually be sent, not the raw query, so the
-                // generated command is runnable as-is.
-                let variables = tab.graphql_variables_editor.content();
-                if body_text.trim().is_empty() && variables.trim().is_empty() {
-                    None
-                } else {
-                    match graphql_body(&body_text, &variables) {
-                        Ok(compiled) => Some(compiled),
-                        Err(err) => {
-                            state.status_message = Some(err);
-                            return Task::none();
-                        }
-                    }
+            let curl_cmd = match crate::app::snippet::command(state.tabs.active_tab()) {
+                Ok(cmd) => cmd,
+                Err(err) => {
+                    state.status_message = Some(err);
+                    return Task::none();
                 }
-            } else if body_text.trim().is_empty() {
-                None
-            } else {
-                Some(body_text)
             };
-            let mut headers: Vec<KvPair> = tab
-                .headers
-                .iter()
-                .filter(|h| h.enabled && !h.key.is_empty())
-                .map(|h| KvPair {
-                    key: h.key.clone(),
-                    value: h.value.clone(),
-                })
-                .collect();
-            // The GraphQL body is JSON, and unlike the JSON body type nothing
-            // else here says so — without this curl would send it as form data.
-            if is_graphql
-                && !headers
-                    .iter()
-                    .any(|h| h.key.eq_ignore_ascii_case("content-type"))
-            {
-                headers.push(KvPair {
-                    key: "Content-Type".to_owned(),
-                    value: "application/json".to_owned(),
-                });
-            }
-            let form_fields: Vec<FormFieldInput> = if tab.body_type == BodyType::FormData {
-                tab.form_fields
-                    .iter()
-                    .filter(|f| f.enabled && !f.key.is_empty())
-                    .map(|f| FormFieldInput {
-                        key: f.key.clone(),
-                        value: f.value.clone(),
-                        is_file: f.field_type == FormFieldType::File,
-                        file_name: f.file_name.clone(),
-                    })
-                    .collect()
-            } else {
-                vec![]
-            };
-            let api_loc = match tab.api_key_location {
-                crate::domain::request::ApiKeyLocation::Header => None,
-                crate::domain::request::ApiKeyLocation::Query => Some("query".to_owned()),
-            };
-            let input = GenerateCurlInput {
-                method: tab.method.as_str().to_owned(),
-                url: tab.url.clone(),
-                headers,
-                body,
-                form_fields,
-                cookies: vec![],
-                auth_type: tab.auth_type.as_str().to_owned(),
-                bearer_token: if tab.bearer_token.is_empty() {
-                    None
-                } else {
-                    Some(tab.bearer_token.clone())
-                },
-                basic_user: if tab.basic_user.is_empty() {
-                    None
-                } else {
-                    Some(tab.basic_user.clone())
-                },
-                basic_pass: if tab.basic_pass.is_empty() {
-                    None
-                } else {
-                    Some(tab.basic_pass.clone())
-                },
-                api_key_name: if tab.api_key_name.is_empty() {
-                    None
-                } else {
-                    Some(tab.api_key_name.clone())
-                },
-                api_key_value: if tab.api_key_value.is_empty() {
-                    None
-                } else {
-                    Some(tab.api_key_value.clone())
-                },
-                api_key_location: api_loc,
-            };
-            let curl_cmd = generate(&input);
             state.curl_modal_command = curl_cmd;
             state.curl_modal_open = true;
         }
@@ -703,9 +904,16 @@ pub(super) fn handle(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
                 enabled: true,
                 file_name: None,
                 file_data: None,
+                description: String::new(),
                 mime_type: None,
             });
             tab.modified = true;
+        }
+        RequestMsg::FormFieldToggled(i) => {
+            if let Some(field) = tab.form_fields.get_mut(i) {
+                field.enabled = !field.enabled;
+                tab.modified = true;
+            }
         }
         RequestMsg::FormFieldRemoved(i) => {
             if i < tab.form_fields.len() {
@@ -818,7 +1026,7 @@ enum EditClass {
 /// Whether a URL-bar editor action mutates the text (for undo coalescing
 /// and the `UrlChanged` follow-up). Navigation, selection and focus never
 /// count — cursor moves must not mark the tab modified.
-fn url_action_edits_content(action: &iced::widget::text_editor::Action) -> bool {
+pub(super) fn url_action_edits_content(action: &iced::widget::text_editor::Action) -> bool {
     use iced::widget::text_editor::{Action as UrlAction, Edit as UrlEdit};
     matches!(
         action,
@@ -835,6 +1043,25 @@ fn url_action_edits_content(action: &iced::widget::text_editor::Action) -> bool 
 
 /// Record an undo checkpoint of the request fields *before* a mutating message is
 /// applied, coalescing runs of keystrokes in one field into a single entry.
+/// Headers "Presets": set the Content-Type row (first one, enabling it),
+/// add one when missing; an empty value removes every Content-Type row.
+fn apply_content_type_preset(headers: &mut Vec<crate::domain::request::KeyValue>, value: &str) {
+    let is_ct = |k: &str| k.trim().eq_ignore_ascii_case("content-type");
+    if value.is_empty() {
+        headers.retain(|h| !is_ct(&h.key));
+        return;
+    }
+    if let Some(h) = headers.iter_mut().find(|h| is_ct(&h.key)) {
+        h.value = value.to_owned();
+        h.enabled = true;
+        return;
+    }
+    let mut row = crate::domain::request::KeyValue::new_empty();
+    row.key = "Content-Type".to_owned();
+    row.value = value.to_owned();
+    headers.push(row);
+}
+
 fn record_undo(tab: &mut RequestTabState, msg: &RequestMsg) {
     match edit_class(msg) {
         EditClass::Skip => {}
@@ -856,9 +1083,13 @@ fn edit_class(msg: &RequestMsg) -> EditClass {
     use RequestMsg as M;
     match msg {
         M::UrlChanged(_) => EditClass::Coalesce(K::Url),
+        M::UrlEdited(iced::widget::text_editor::Action::Edit(
+            iced::widget::text_editor::Edit::Paste(text),
+        )) if classify_pasted_command(text) != PastedCommand::Other => EditClass::Skip,
         M::UrlEdited(action) if url_action_edits_content(action) => EditClass::Coalesce(K::Url),
         M::HeaderKeyChanged(i, _) => EditClass::Coalesce(K::HeaderKey(*i)),
         M::HeaderValueChanged(i, _) => EditClass::Coalesce(K::HeaderValue(*i)),
+        M::HeaderDescriptionChanged(i, _) => EditClass::Coalesce(K::HeaderDescription(*i)),
         M::ParamKeyChanged(i, _) => EditClass::Coalesce(K::ParamKey(*i)),
         M::ParamValueChanged(i, _) => EditClass::Coalesce(K::ParamValue(*i)),
         M::HeadersBulkEdited(_) => EditClass::Coalesce(K::HeadersBulk),
@@ -879,11 +1110,15 @@ fn edit_class(msg: &RequestMsg) -> EditClass {
         | M::ParamRemoved(_)
         | M::ParamToggled(_)
         | M::HeadersBulkToggle
+        | M::HeaderPresetApplied(_)
+        | M::HeadersCleared
+        | M::FormFieldToggled(_)
         | M::ParamsBulkToggle
         | M::MethodChanged(_)
         | M::AuthTypeChanged(_)
         | M::ApiKeyLocationChanged(_)
         | M::ImportCurl(_)
+        | M::ImportHttpie(_)
         | M::ImportCommandParsed { .. } => EditClass::Discrete,
         _ => EditClass::Skip,
     }
@@ -948,6 +1183,7 @@ fn parse_bulk_kv(text: &str, allow_eq: bool) -> Vec<crate::domain::request::KeyV
                 key,
                 value,
                 enabled,
+                description: String::new(),
             })
         })
         .collect()
@@ -1229,11 +1465,43 @@ fn import_pasted_text(state: &mut AppState, text: String) -> Task<Message> {
     }
 }
 
-fn apply_parsed_command(
+fn command_has_url(command: &crate::services::curl::ParsedCurl) -> bool {
+    command
+        .url
+        .as_deref()
+        .is_some_and(|url| !url.trim().is_empty())
+}
+
+pub(super) fn apply_parsed_command(
     tab: &mut RequestTabState,
     parsed: crate::services::curl::ParsedCurl,
     cmd_len: usize,
 ) {
+    // A complete command describes a new HTTP payload. Preserve tab identity,
+    // title and scripts, but never carry old credentials/body to its endpoint.
+    // Incomplete typed commands keep the existing fields until a URL exists.
+    if parsed.url.is_some() {
+        tab.headers.clear();
+        tab.headers_bulk = None;
+        tab.params_bulk = None;
+        tab.auth_type = crate::domain::request::AuthType::None;
+        tab.bearer_token.clear();
+        tab.basic_user.clear();
+        tab.basic_pass.clear();
+        tab.api_key_name.clear();
+        tab.api_key_value.clear();
+        tab.jwt_secret.clear();
+        tab.jwt_subject.clear();
+        tab.cookie_string.clear();
+        tab.cookies.clear();
+        tab.body_type = BodyType::None;
+        tab.body_editor = crate::state::tabs::make_code_editor("", "txt");
+        tab.body_vars.clear();
+        tab.body_completion = None;
+        tab.var_card = None;
+        tab.form_fields.clear();
+        tab.form_viewers.clear();
+    }
     // A paste that parses to no URL must not linger in the URL bar: a
     // multi-MB command would sit in the single-line URL input and freeze
     // layout every frame. The parsed content still applies below — only the
@@ -1288,6 +1556,7 @@ fn apply_parsed_command(
             key: k,
             value: v,
             enabled: true,
+            description: String::new(),
         })
         .collect();
     if has_headers {
@@ -1304,6 +1573,7 @@ fn apply_parsed_command(
             };
             tab.body_editor =
                 crate::state::tabs::make_code_editor(&body, if is_json { "json" } else { "txt" });
+            tab.refresh_body_vars();
         }
         tab.active_request_tab = crate::message::RequestTab::Body;
     } else if auth_detected {
@@ -1346,6 +1616,7 @@ fn apply_parsed_command(
                     enabled: true,
                     file_name,
                     file_data: None,
+                    description: String::new(),
                     mime_type: None,
                 }
             })
@@ -1384,4 +1655,1318 @@ fn guess_mime(name: &str) -> Option<String> {
         _ => return None,
     };
     Some(m.to_owned())
+}
+
+/// How long the mouse rests on a body variable before its card opens, so
+/// moving across the text does not flash cards.
+const BODY_CARD_DELAY_MS: u64 = 250;
+
+/// Margin around the token where the mouse may be, on its way to the card
+/// that opens just beyond the token, without closing it.
+const BODY_CARD_SLACK: f32 = 6.0;
+
+/// The `{{variable}}` under a point of the body editor. The editor hit-tests
+/// in canvas coordinates (wrap, gutter, folds); the mouse is in viewport ones.
+fn body_token_at(
+    tab: &RequestTabState,
+    point: iced::Point,
+) -> Option<&crate::services::variables::VarToken> {
+    let canvas = iced::Point::new(point.x, point.y + tab.body_editor.viewport_scroll());
+    let pos = tab.body_editor.lsp_position_at_point(canvas)?;
+    let (line, column) = (pos.line as usize, pos.character as usize);
+    tab.body_vars
+        .iter()
+        .find(|t| t.line == line && (t.start..t.end).contains(&column))
+}
+
+/// A press that moves further than this is a selection, not a click.
+const CLICK_SLOP: f32 = 3.0;
+
+/// Open the card of the body token at `point`, in viewport pixels. A clicked
+/// one is pinned: it stays until dismissed, so the mouse is free to wander.
+fn open_body_card(tab: &mut RequestTabState, point: iced::Point, pinned: bool) {
+    let Some(name) = body_token_at(tab, point).map(|t| t.name.clone()) else {
+        return;
+    };
+    let rects = crate::ui::request::body::variable_rects(&tab.body_editor, &tab.body_vars);
+    let anchor = rects.iter().find_map(|r| {
+        let rect = iced::Rectangle {
+            x: r.x,
+            y: r.y,
+            width: r.width,
+            height: r.height,
+        };
+        rect.contains(point).then_some(rect)
+    });
+    if let Some(anchor) = anchor {
+        tab.var_card = Some(crate::state::tabs::VarCard {
+            names: vec![name],
+            anchor: crate::state::tabs::VarCardAnchor::Body(anchor),
+            mask_all: false,
+            over_card: false,
+            pinned,
+            revealed: false,
+            copied: None,
+        });
+    }
+}
+
+/// How long a Headers card waits for the mouse to cross the gap to it.
+const VAR_CARD_LEAVE_MS: u64 = 150;
+
+fn var_card_after(ms: u64, message: RequestMsg) -> Task<Message> {
+    // Inside `async`: creating the sleep needs the runtime, update() has none.
+    Task::perform(
+        async move { tokio::time::sleep(std::time::Duration::from_millis(ms)).await },
+        move |()| Message::Request(message.clone()),
+    )
+}
+
+fn header_cell(
+    tab: &RequestTabState,
+    row: usize,
+    field: crate::state::tabs::SuggestField,
+) -> Option<&str> {
+    tab.field_text(row, field)
+}
+
+/// Open the card of a Headers cell. Does nothing for a cell without variables.
+fn open_header_card(
+    tab: &mut RequestTabState,
+    row: usize,
+    field: crate::state::tabs::SuggestField,
+    pinned: bool,
+) {
+    use crate::state::tabs::{SuggestField, VarCard, VarCardAnchor};
+    let Some(text) = header_cell(tab, row, field) else {
+        return;
+    };
+    let names: Vec<String> = crate::ui::request::headers::variable_names(text)
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    if names.is_empty() {
+        return;
+    }
+    let mask_all = match field {
+        SuggestField::Value => crate::services::variables::sensitive(&tab.headers[row].key),
+        SuggestField::Auth(field) => field.secret(),
+        _ => false,
+    };
+    tab.var_card = Some(VarCard {
+        names,
+        anchor: VarCardAnchor::Header(row, field),
+        mask_all,
+        over_card: false,
+        pinned,
+        revealed: false,
+        copied: None,
+    });
+}
+
+fn handle_var_card(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
+    let env = state.environments.iter().find(|e| e.is_active);
+    let tab = state.tabs.active_tab_mut();
+    match msg {
+        RequestMsg::BodyHovered(point) => {
+            tab.body_pointer = point;
+            if tab.body_dragging || tab.body_completion.is_some() {
+                tab.body_hover = None;
+                return Task::none();
+            }
+            let hit = point.and_then(|p| body_token_at(tab, p).map(|t| t.name.clone()));
+            if let Some(card) = &tab.var_card
+                && !card.pinned
+                && !card.over_card
+                && let crate::state::tabs::VarCardAnchor::Body(rect) = card.anchor
+            {
+                let near = point.is_some_and(|p| rect.expand(BODY_CARD_SLACK).contains(p));
+                let other_token = hit.as_ref().is_some_and(|n| !card.names.contains(n));
+                if !near || other_token {
+                    tab.var_card = None;
+                }
+            }
+            let is_new =
+                hit.is_some() && hit.as_deref() != tab.body_hover.as_ref().map(|h| h.name.as_str());
+            tab.body_hover = match (hit.clone(), point) {
+                (Some(name), Some(point)) => Some(crate::state::tabs::BodyHover { name, point }),
+                _ => None,
+            };
+            if let Some(name) = hit.filter(|_| is_new && tab.var_card.is_none()) {
+                return Task::perform(
+                    async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(BODY_CARD_DELAY_MS))
+                            .await;
+                        name
+                    },
+                    |name| Message::Request(RequestMsg::VarCardDue(name)),
+                );
+            }
+        }
+        RequestMsg::VarCardDue(name) => {
+            let Some(hover) = tab.body_hover.clone().filter(|h| h.name == name) else {
+                return Task::none();
+            };
+            if tab.var_card.is_some() || tab.body_dragging || tab.body_completion.is_some() {
+                return Task::none();
+            }
+            open_body_card(tab, hover.point, false);
+        }
+        RequestMsg::VarCardHover(over) => {
+            if let Some(card) = &mut tab.var_card {
+                card.over_card = over;
+                if !over && !card.pinned {
+                    // A cell keeps a gap to its card; a token's slack covers it.
+                    if matches!(card.anchor, crate::state::tabs::VarCardAnchor::Body(_)) {
+                        tab.var_card = None;
+                    } else {
+                        return var_card_after(VAR_CARD_LEAVE_MS, RequestMsg::VarCardLeaveDue);
+                    }
+                }
+            }
+        }
+        RequestMsg::HeaderVarHovered(row, field, true) => {
+            tab.header_hover = Some((row, field));
+            let here = tab
+                .var_card
+                .as_ref()
+                .is_some_and(|c| c.anchor == crate::state::tabs::VarCardAnchor::Header(row, field));
+            let has_variables = header_cell(tab, row, field)
+                .is_some_and(|text| !crate::ui::request::headers::variable_names(text).is_empty());
+            if has_variables && !here && tab.header_suggest.is_none() {
+                return var_card_after(BODY_CARD_DELAY_MS, RequestMsg::HeaderVarDue(row, field));
+            }
+        }
+        RequestMsg::HeaderVarHovered(row, field, false) => {
+            if tab.header_hover == Some((row, field)) {
+                tab.header_hover = None;
+            }
+            if tab.var_card.as_ref().is_some_and(|c| {
+                !c.pinned && c.anchor == crate::state::tabs::VarCardAnchor::Header(row, field)
+            }) {
+                return var_card_after(VAR_CARD_LEAVE_MS, RequestMsg::VarCardLeaveDue);
+            }
+        }
+        RequestMsg::HeaderVarDue(row, field) => {
+            if tab.header_hover == Some((row, field))
+                && tab.var_card.is_none()
+                && tab.header_suggest.is_none()
+            {
+                open_header_card(tab, row, field, false);
+            }
+        }
+        RequestMsg::VarCardLeaveDue => {
+            let hover = tab.header_hover;
+            if tab.var_card.as_ref().is_some_and(|c| {
+                let on_cell = matches!(
+                    c.anchor,
+                    crate::state::tabs::VarCardAnchor::Header(row, field)
+                        if hover == Some((row, field))
+                );
+                !c.pinned && !c.over_card && !on_cell
+            }) {
+                tab.var_card = None;
+            }
+        }
+        RequestMsg::VarCardPinned => {
+            if let Some(card) = &mut tab.var_card {
+                card.pinned = true;
+            }
+        }
+        RequestMsg::VarCardRevealToggled => {
+            if let Some(card) = &mut tab.var_card {
+                card.revealed = !card.revealed;
+            }
+        }
+        RequestMsg::VarCardCopied(name) => {
+            let Some(card) = &mut tab.var_card else {
+                return Task::none();
+            };
+            if let Some(value) = env.and_then(|e| e.variables.get(&name)).cloned() {
+                card.copied = Some(name);
+                return iced::clipboard::write::<Message>(value);
+            }
+        }
+        RequestMsg::VarCardClosed => {
+            tab.var_card = None;
+            tab.body_hover = None;
+        }
+        _ => {}
+    }
+    Task::none()
+}
+
+/// Typing updates the script autocomplete, moving the caret closes it.
+fn after_script_edit(tab: &mut RequestTabState, msg: &iced_code_editor::Message) {
+    match crate::state::tabs::completion_effect(msg) {
+        crate::state::tabs::CompletionEffect::Refresh => tab.refresh_script_completion(),
+        crate::state::tabs::CompletionEffect::Close => tab.script_completion = None,
+        crate::state::tabs::CompletionEffect::Keep => {}
+    }
+}
+
+fn handle_script_ui(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
+    use crate::state::tabs::ScriptPhase;
+    let tab = state.tabs.active_tab_mut();
+    let apply = match msg {
+        RequestMsg::ScriptPhaseSelected(phase) => {
+            tab.script_phase = phase;
+            tab.script_completion = None;
+            return Task::none();
+        }
+        RequestMsg::ScriptImportEnabled => {
+            let source = crate::services::import::postman::enable_imported_script(
+                &tab.script_editor().content(),
+            );
+            if let Some(source) = source {
+                *tab.script_editor_mut() = crate::state::tabs::make_code_editor(&source, "js");
+                tab.script_completion = None;
+                tab.modified = true;
+            }
+            return Task::none();
+        }
+        RequestMsg::ScriptCompletionClosed => {
+            tab.script_completion = None;
+            return Task::none();
+        }
+        RequestMsg::ScriptCompletionMoved(down) => {
+            if let Some(c) = tab.script_completion.as_mut() {
+                let n = c.items.len().max(1);
+                c.selected = if down {
+                    (c.selected + 1) % n
+                } else {
+                    (c.selected + n - 1) % n
+                };
+            }
+            return Task::none();
+        }
+        RequestMsg::ScriptCompletionAccepted => tab
+            .script_completion
+            .as_ref()
+            .and_then(|c| c.items.get(c.selected))
+            .map(|s| s.apply.clone()),
+        RequestMsg::ScriptCompletionPicked(apply) => Some(apply),
+        _ => None,
+    };
+    let (Some(apply), Some(completion)) = (apply, tab.script_completion.take()) else {
+        return Task::none();
+    };
+    // Through the editor's own commands, so undo keeps working.
+    let phase = tab.script_phase;
+    let editor = tab.script_editor_mut();
+    for _ in 0..completion.back {
+        let _ = editor.update(&iced_code_editor::Message::Backspace);
+    }
+    let task = editor.update(&iced_code_editor::Message::Paste(apply));
+    tab.modified = true;
+    task.map(move |m| {
+        Message::Request(match phase {
+            ScriptPhase::Before => RequestMsg::PreRequestScriptEdited(m),
+            ScriptPhase::After => RequestMsg::TestScriptEdited(m),
+        })
+    })
+}
+
+fn handle_body_completion(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
+    let tab = state.tabs.active_tab_mut();
+    match msg {
+        RequestMsg::BodyCompletionClosed => tab.body_completion = None,
+        RequestMsg::BodyCompletionMoved(down) => {
+            if let Some(c) = tab.body_completion.as_mut() {
+                let n = c.items.len().max(1);
+                c.selected = if down {
+                    (c.selected + 1) % n
+                } else {
+                    (c.selected + n - 1) % n
+                };
+            }
+        }
+        RequestMsg::BodyCompletionAccepted => {
+            let pick = tab
+                .body_completion
+                .as_ref()
+                .and_then(|c| c.items.get(c.selected))
+                .map(|s| s.apply.clone());
+            if let Some(apply) = pick {
+                return insert_body_variable(tab, apply);
+            }
+        }
+        RequestMsg::BodyCompletionPicked(apply) => return insert_body_variable(tab, apply),
+        _ => {}
+    }
+    Task::none()
+}
+
+/// Replace the token around the caret through the editor's own edit
+/// commands, so undo keeps working.
+fn insert_body_variable(tab: &mut RequestTabState, apply: String) -> Task<Message> {
+    use iced_code_editor::Message as Editor;
+    let Some(c) = tab.body_completion.take() else {
+        return Task::none();
+    };
+    for _ in 0..c.forward {
+        let _ = tab.body_editor.update(&Editor::Delete);
+    }
+    for _ in 0..c.back {
+        let _ = tab.body_editor.update(&Editor::Backspace);
+    }
+    let task = tab.body_editor.update(&Editor::Paste(apply));
+    tab.modified = true;
+    tab.refresh_body_vars();
+    task.map(|m| Message::Request(RequestMsg::BodyEdited(m)))
+}
+
+/// The message that sets a field's text, so every editor of it goes through
+/// the same edit path (undo, drafts, URL params, autocomplete).
+fn field_edit(row: usize, field: crate::state::tabs::SuggestField, value: String) -> RequestMsg {
+    use crate::state::tabs::{AuthField, SuggestField};
+    match field {
+        SuggestField::Key => RequestMsg::HeaderKeyChanged(row, value),
+        SuggestField::Value => RequestMsg::HeaderValueChanged(row, value),
+        SuggestField::ParamKey => RequestMsg::ParamKeyChanged(row, value),
+        SuggestField::ParamValue => RequestMsg::ParamValueChanged(row, value),
+        SuggestField::Auth(field) => match field {
+            AuthField::Bearer => RequestMsg::BearerTokenChanged(value),
+            AuthField::BasicUser => RequestMsg::BasicUserChanged(value),
+            AuthField::BasicPass => RequestMsg::BasicPassChanged(value),
+            AuthField::ApiKeyName => RequestMsg::ApiKeyNameChanged(value),
+            AuthField::ApiKeyValue => RequestMsg::ApiKeyValueChanged(value),
+            AuthField::Cookie => RequestMsg::CookieStringChanged(value),
+            AuthField::JwtSubject => RequestMsg::JwtSubjectChanged(value),
+            AuthField::JwtSecret => RequestMsg::JwtSecretChanged(value),
+        },
+    }
+}
+
+/// The field a message edits, if any: the update loop refocuses it when
+/// the edit swaps its input for its editor (a secret field gaining `{{`).
+pub(super) fn edited_field(msg: &RequestMsg) -> Option<(usize, crate::state::tabs::SuggestField)> {
+    use crate::state::tabs::{AuthField, SuggestField};
+    let auth = |field| Some((0, SuggestField::Auth(field)));
+    match msg {
+        RequestMsg::FieldEdited(row, field, _)
+        | RequestMsg::HeaderSuggestionPicked(row, field, _) => Some((*row, *field)),
+        RequestMsg::HeaderKeyChanged(row, _) => Some((*row, SuggestField::Key)),
+        RequestMsg::HeaderValueChanged(row, _) => Some((*row, SuggestField::Value)),
+        RequestMsg::ParamKeyChanged(row, _) => Some((*row, SuggestField::ParamKey)),
+        RequestMsg::ParamValueChanged(row, _) => Some((*row, SuggestField::ParamValue)),
+        RequestMsg::BearerTokenChanged(_) => auth(AuthField::Bearer),
+        RequestMsg::BasicUserChanged(_) => auth(AuthField::BasicUser),
+        RequestMsg::BasicPassChanged(_) | RequestMsg::ToggleBasicPassVisibility => {
+            auth(AuthField::BasicPass)
+        }
+        RequestMsg::ApiKeyNameChanged(_) => auth(AuthField::ApiKeyName),
+        RequestMsg::ApiKeyValueChanged(_) => auth(AuthField::ApiKeyValue),
+        RequestMsg::CookieStringChanged(_) => auth(AuthField::Cookie),
+        RequestMsg::JwtSubjectChanged(_) => auth(AuthField::JwtSubject),
+        RequestMsg::JwtSecretChanged(_) => auth(AuthField::JwtSecret),
+        _ => None,
+    }
+}
+
+/// Typing in a Headers cell keeps its list open on that cell, back at the
+/// first (best) match since the filter changed.
+fn open_suggest(tab: &mut RequestTabState, row: usize, field: crate::state::tabs::SuggestField) {
+    tab.header_suggest = Some(crate::state::tabs::HeaderSuggest {
+        row,
+        field,
+        selected: 0,
+    });
+}
+
+fn handle_header_suggest(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
+    match msg {
+        RequestMsg::HeaderSuggestOpened(row, field) => {
+            let tab = state.tabs.active_tab_mut();
+            // A finished `{{variable}}` shows its value; only an open `{{`
+            // or a plain cell offers the list.
+            let shows_value = header_cell(tab, row, field).is_some_and(|text| {
+                !crate::ui::request::headers::variable_names(text).is_empty()
+                    && crate::services::header_suggest::variable_trigger(text).is_none()
+            });
+            if shows_value {
+                tab.header_suggest = None;
+                let here = tab.var_card.as_ref().is_some_and(|c| {
+                    c.anchor == crate::state::tabs::VarCardAnchor::Header(row, field)
+                });
+                if here {
+                    if let Some(card) = &mut tab.var_card {
+                        card.pinned = true;
+                    }
+                } else {
+                    open_header_card(tab, row, field, true);
+                }
+            } else {
+                tab.var_card = None;
+                if header_cell(tab, row, field).is_some()
+                    && tab.header_suggest.map(|s| (s.row, s.field)) != Some((row, field))
+                {
+                    open_suggest(tab, row, field);
+                }
+            }
+        }
+        RequestMsg::HeaderSuggestClosed => {
+            state.tabs.active_tab_mut().header_suggest = None;
+        }
+        RequestMsg::HeaderSuggestMoved(down) => {
+            let n = state
+                .tabs
+                .active_tab()
+                .header_suggestions(state.active_env())
+                .len();
+            if let Some(s) = state.tabs.active_tab_mut().header_suggest.as_mut()
+                && n > 0
+            {
+                s.selected = if down {
+                    (s.selected + 1) % n
+                } else {
+                    (s.selected + n - 1) % n
+                };
+            }
+        }
+        RequestMsg::HeaderSuggestAccepted => {
+            let tab = state.tabs.active_tab();
+            let Some(s) = tab.header_suggest else {
+                return Task::none();
+            };
+            let list = tab.header_suggestions(state.active_env());
+            let Some(pick) = list.get(s.selected.min(list.len().saturating_sub(1))) else {
+                state.tabs.active_tab_mut().header_suggest = None;
+                return Task::none();
+            };
+            let value = pick.apply.clone();
+            return handle_header_suggest(
+                state,
+                RequestMsg::HeaderSuggestionPicked(s.row, s.field, value),
+            );
+        }
+        RequestMsg::HeaderSuggestionPicked(row, field, value) => {
+            if header_cell(state.tabs.active_tab(), row, field).is_none() {
+                return Task::none();
+            }
+            // Through the normal edit path so undo and drafts see it.
+            let edit = field_edit(row, field, value);
+            let task = handle(state, edit);
+            state.tabs.active_tab_mut().header_suggest = None;
+            return task;
+        }
+        _ => {}
+    }
+    Task::none()
+}
+
+fn handle_url_variables(state: &mut AppState, msg: RequestMsg) -> Task<Message> {
+    use crate::services::variables;
+    match msg {
+        RequestMsg::UrlVariableDismissed => {
+            state.tabs.active_tab_mut().url_variable_draft = None;
+        }
+        RequestMsg::UrlVariableValueChanged(value) => {
+            if let Some(draft) = &mut state.tabs.active_tab_mut().url_variable_draft {
+                draft.value = value;
+                draft.error = None;
+            }
+        }
+        RequestMsg::UrlVariableEnvironmentSelected(id) => {
+            if id
+                .as_ref()
+                .is_none_or(|id| state.environments.iter().any(|env| &env.id == id))
+                && let Some(draft) = &mut state.tabs.active_tab_mut().url_variable_draft
+            {
+                draft.environment_id = id;
+                draft.error = None;
+            }
+        }
+        RequestMsg::UrlVariableEnvironmentNameChanged(name) => {
+            if let Some(draft) = &mut state.tabs.active_tab_mut().url_variable_draft {
+                draft.environment_name = name;
+                draft.error = None;
+            }
+        }
+        RequestMsg::UrlVariableSave => {
+            if let Err(error) = save_url_variable(state)
+                && let Some(draft) = &mut state.tabs.active_tab_mut().url_variable_draft
+            {
+                draft.error = Some(error);
+            }
+        }
+        RequestMsg::UrlHovered(point) => {
+            let tab = state.tabs.active_tab_mut();
+            tab.url_hover = point
+                .filter(|p| p.x >= 0.0 && p.y >= 0.0)
+                .and_then(|point| {
+                    // Hit-test the already-shaped editor, including horizontal
+                    // scrolling and Unicode. Restore both caret and selection.
+                    let saved = tab.url_editor.cursor();
+                    tab.url_editor
+                        .perform(iced::widget::text_editor::Action::Click(point));
+                    let column = tab.url_editor.cursor().position.column;
+                    tab.url_editor.move_to(saved);
+                    variables::variable_at(&tab.url, column)
+                });
+        }
+        RequestMsg::UrlCompletionDismissed => {
+            state.tabs.active_tab_mut().url_completion_open = false;
+        }
+        RequestMsg::UrlCompletionMoved(delta) => {
+            let tab = state.tabs.active_tab();
+            if let Some((_, query)) =
+                variables::completion(&tab.url, tab.url_editor.cursor().position.column)
+            {
+                let n = variables::candidates(state.active_env(), query).len();
+                if n > 0 {
+                    let next =
+                        (tab.url_completion_selected as i32 + delta).rem_euclid(n as i32) as usize;
+                    state.tabs.active_tab_mut().url_completion_selected = next;
+                }
+            }
+        }
+        RequestMsg::UrlCompletionSelected(key) => {
+            let tab = state.tabs.active_tab();
+            let Some((range, query)) =
+                variables::completion(&tab.url, tab.url_editor.cursor().position.column)
+            else {
+                return Task::none();
+            };
+            let keys = variables::candidates(state.active_env(), query);
+            let Some(key) = key.or_else(|| {
+                keys.get(
+                    tab.url_completion_selected
+                        .min(keys.len().saturating_sub(1)),
+                )
+                .cloned()
+            }) else {
+                return Task::none();
+            };
+            if !keys.contains(&key) {
+                return Task::none();
+            }
+            let replacement = format!("{{{{{key}}}}}");
+            let caret = range.start + replacement.len();
+            let mut url = tab.url.clone();
+            url.replace_range(range, &replacement);
+            let _ = handle(state, RequestMsg::UrlChanged(url.clone()));
+            let tab = state.tabs.active_tab_mut();
+            tab.set_url(url);
+            tab.url_editor.move_to(iced_core::text::editor::Cursor {
+                position: iced_core::text::editor::Position {
+                    line: 0,
+                    column: caret,
+                },
+                selection: None,
+            });
+            return iced::widget::operation::focus("request-url");
+        }
+        _ => {}
+    }
+    Task::none()
+}
+
+pub(super) fn open_url_variable(state: &mut AppState, key: String) {
+    if state
+        .active_env()
+        .is_some_and(|env| env.variables.contains_key(&key))
+    {
+        return;
+    }
+    let environment_id = state
+        .active_env()
+        .or(state.environments.first())
+        .map(|env| env.id.clone());
+    let environments = state
+        .environments
+        .iter()
+        .map(|env| (env.id.clone(), env.name.clone()))
+        .collect();
+    let tab = state.tabs.active_tab_mut();
+    tab.url_completion_open = false;
+    tab.url_variable_draft = Some(crate::state::tabs::UrlVariableDraft {
+        key,
+        value: String::new(),
+        environment_id,
+        environment_name: String::new(),
+        environments,
+        error: None,
+    });
+}
+
+fn save_url_variable(state: &mut AppState) -> Result<(), String> {
+    use crate::{domain::environment::AppEnvironment, services::storage};
+    let Some(draft) = state.tabs.active_tab().url_variable_draft.clone() else {
+        return Ok(());
+    };
+    if draft.key.is_empty() || draft.key.contains(['{', '}', '\r', '\n']) {
+        return Err("Choose a valid variable name.".into());
+    }
+    // The token may have disappeared through another URL writer while open.
+    if !state
+        .tabs
+        .active_tab()
+        .url
+        .match_indices("{{")
+        .any(|(offset, _)| {
+            crate::services::variables::variable_at(&state.tabs.active_tab().url, offset).as_deref()
+                == Some(&draft.key)
+        })
+    {
+        return Err("This variable is no longer in the URL.".into());
+    }
+    let mut environment = match &draft.environment_id {
+        Some(id) => state
+            .environments
+            .iter()
+            .find(|env| &env.id == id)
+            .cloned()
+            .ok_or("The selected environment no longer exists.")?,
+        None => {
+            let name = draft.environment_name.trim();
+            if name.is_empty() {
+                return Err("Enter an environment name.".into());
+            }
+            AppEnvironment {
+                id: uuid::Uuid::new_v4().to_string(),
+                name: name.into(),
+                variables: Default::default(),
+                is_active: true,
+            }
+        }
+    };
+    if environment.variables.contains_key(&draft.key) {
+        return Err(
+            "This environment already defines this variable. Edit it in Environments.".into(),
+        );
+    }
+    environment.variables.insert(draft.key.clone(), draft.value);
+    environment.is_active = true;
+    let db = state
+        .db
+        .as_ref()
+        .ok_or("Local storage is unavailable. Variable was not saved.")?;
+    // save_environment also deactivates the previous environment. Both writes
+    // must commit together before the UI or snippet can observe the new value.
+    let transaction = db.unchecked_transaction().map_err(|e| e.to_string())?;
+    storage::save_environment(&transaction, &environment)?;
+    transaction.commit().map_err(|e| e.to_string())?;
+    for env in &mut state.environments {
+        env.is_active = false;
+    }
+    let id = environment.id.clone();
+    match state.environments.iter_mut().find(|env| env.id == id) {
+        Some(existing) => *existing = environment,
+        None => state.environments.push(environment),
+    }
+    if state.sidebar.env_editing.as_deref() == Some(id.as_str()) {
+        let value = state.active_env().unwrap().variables[&draft.key].clone();
+        state.sidebar.env_edit_rows.push((draft.key, value));
+    }
+    state.tabs.active_tab_mut().url_variable_draft = None;
+    state.status_message = Some("Variable saved to environment".into());
+    Ok(())
+}
+
+#[cfg(test)]
+mod header_suggest_tests {
+    use super::*;
+    use crate::state::tabs::SuggestField;
+
+    #[test]
+    fn a_params_cell_lists_environment_variables_and_shows_their_card() {
+        let dir = std::env::temp_dir().join(format!("rustman-psuggest-{}", uuid::Uuid::new_v4()));
+        let (mut state, _) = crate::app::boot::init_at(dir.clone());
+        state
+            .environments
+            .iter_mut()
+            .for_each(|e| e.is_active = false);
+        state
+            .environments
+            .push(crate::domain::environment::AppEnvironment {
+                id: "e".into(),
+                name: "E".into(),
+                variables: [("id".to_owned(), "42".to_owned())].into(),
+                is_active: true,
+            });
+        let _ = handle(&mut state, RequestMsg::ParamAdded);
+        let _ = handle(&mut state, RequestMsg::ParamKeyChanged(0, "user".into()));
+        let _ = handle(&mut state, RequestMsg::ParamValueChanged(0, "{{".into()));
+        let list = state
+            .tabs
+            .active_tab()
+            .header_suggestions(state.active_env());
+        assert_eq!(list[0].label, "id");
+        let _ = handle(&mut state, RequestMsg::HeaderSuggestAccepted);
+        let tab = state.tabs.active_tab();
+        assert_eq!(tab.params[0].value, "{{id}}");
+        assert!(tab.url.ends_with("?user={{id}}"), "{}", tab.url);
+        assert!(tab.header_suggest.is_none());
+
+        let _ = handle(
+            &mut state,
+            RequestMsg::HeaderSuggestOpened(0, SuggestField::ParamValue),
+        );
+        let card = state.tabs.active_tab().var_card.clone().unwrap();
+        assert_eq!(card.names, ["id"]);
+        assert!(card.pinned && !card.mask_all);
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn env_state(name: &str) -> (AppState, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("rustman-{name}-{}", uuid::Uuid::new_v4()));
+        let (mut state, _) = crate::app::boot::init_at(dir.clone());
+        state
+            .environments
+            .iter_mut()
+            .for_each(|e| e.is_active = false);
+        state
+            .environments
+            .push(crate::domain::environment::AppEnvironment {
+                id: "e".into(),
+                name: "E".into(),
+                variables: [("id".to_owned(), "42".to_owned())].into(),
+                is_active: true,
+            });
+        (state, dir)
+    }
+
+    #[test]
+    fn a_cell_editor_types_through_the_edit_path_on_one_line() {
+        use iced::widget::text_editor::{Action, Edit};
+        let (mut state, dir) = env_state("fieldedit");
+        let _ = handle(&mut state, RequestMsg::HeaderAdded);
+        state.tabs.active_tab_mut().sync_field_editors();
+        let type_in = |state: &mut AppState, action| {
+            let _ = handle(
+                state,
+                RequestMsg::FieldEdited(0, SuggestField::Value, action),
+            );
+        };
+        type_in(&mut state, Action::Edit(Edit::Insert('a')));
+        type_in(&mut state, Action::Edit(Edit::Enter));
+        type_in(
+            &mut state,
+            Action::Edit(Edit::Paste(std::sync::Arc::new("-{{\n".into()))),
+        );
+        let tab = state.tabs.active_tab();
+        assert_eq!(tab.headers[0].value, "a-{{");
+        assert_eq!(
+            tab.header_suggest.map(|s| s.field),
+            Some(SuggestField::Value),
+            "typing `{{{{` lists the variables"
+        );
+
+        // Text changed elsewhere reaches the editor; equal text keeps it.
+        state.tabs.active_tab_mut().headers[0].value = "{{id}}".into();
+        state.tabs.active_tab_mut().sync_field_editors();
+        let tab = state.tabs.active_tab();
+        assert_eq!(
+            tab.field_editors[&(0, SuggestField::Value)].text(),
+            "{{id}}"
+        );
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_secret_shows_only_once_it_holds_a_variable() {
+        use crate::state::tabs::AuthField;
+        let (mut state, dir) = env_state("secret");
+        let bearer = SuggestField::Auth(AuthField::Bearer);
+        let _ = handle(&mut state, RequestMsg::BearerTokenChanged("abc".into()));
+        state.tabs.active_tab_mut().sync_field_editors();
+        assert!(!state.tabs.active_tab().shows_editor(0, bearer));
+        let _ = handle(&mut state, RequestMsg::BearerTokenChanged("{{".into()));
+        let list = state
+            .tabs
+            .active_tab()
+            .header_suggestions(state.active_env());
+        assert_eq!(list[0].label, "id");
+        let _ = handle(&mut state, RequestMsg::HeaderSuggestAccepted);
+        state.tabs.active_tab_mut().sync_field_editors();
+        let tab = state.tabs.active_tab();
+        assert_eq!(tab.bearer_token, "{{id}}");
+        assert!(tab.shows_editor(0, bearer));
+        assert!(tab.shows_editor(0, SuggestField::Auth(AuthField::BasicUser)));
+
+        let _ = handle(&mut state, RequestMsg::HeaderSuggestOpened(0, bearer));
+        let card = state.tabs.active_tab().var_card.clone().unwrap();
+        assert_eq!(card.names, ["id"]);
+        assert!(
+            card.mask_all && card.pinned,
+            "the value waits behind the eye"
+        );
+
+        // Literal text around a reference is still a credential: masked.
+        let _ = handle(
+            &mut state,
+            RequestMsg::BearerTokenChanged("{{id}}synthetic-secret".into()),
+        );
+        state.tabs.active_tab_mut().sync_field_editors();
+        assert!(!state.tabs.active_tab().shows_editor(0, bearer));
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn values_under_sensitive_or_variable_keys_are_secret() {
+        let (mut state, dir) = env_state("secret-keys");
+        let kv = |key: &str| crate::domain::request::KeyValue {
+            key: key.into(),
+            value: "abc".into(),
+            ..crate::domain::request::KeyValue::new_empty()
+        };
+        let tab = state.tabs.active_tab_mut();
+        tab.headers = vec![
+            kv("X-Api-Key"),
+            kv("{{name}}"),
+            kv("Accept"),
+            kv("Authorization"),
+        ];
+        tab.params = vec![kv("api_key"), kv("page")];
+        let tab = state.tabs.active_tab();
+        assert!(tab.field_secret(0, SuggestField::Value));
+        assert!(tab.field_secret(1, SuggestField::Value));
+        assert!(!tab.field_secret(2, SuggestField::Value));
+        assert!(
+            !tab.field_secret(3, SuggestField::Value),
+            "a typed Authorization header is an ordinary field"
+        );
+        let list = crate::services::header_suggest::for_value("Authorization", "", None);
+        assert!(list.is_empty(), "no scheme presets: {list:?}");
+        assert!(tab.field_secret(0, SuggestField::ParamValue));
+        assert!(!tab.field_secret(1, SuggestField::ParamValue));
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn typing_arrows_and_enter_fill_the_cell() {
+        let dir = std::env::temp_dir().join(format!("rustman-suggest-{}", uuid::Uuid::new_v4()));
+        let (mut state, _) = crate::app::boot::init_at(dir.clone());
+        let _ = handle(&mut state, RequestMsg::HeaderAdded);
+        let _ = handle(&mut state, RequestMsg::HeaderKeyChanged(0, "con".into()));
+        let tab = state.tabs.active_tab();
+        assert_eq!(tab.header_suggest.map(|s| s.field), Some(SuggestField::Key));
+        let list = tab.header_suggestions(None);
+        assert_eq!(list[0].label, "Connection");
+
+        let _ = handle(&mut state, RequestMsg::HeaderSuggestMoved(true));
+        let _ = handle(&mut state, RequestMsg::HeaderSuggestAccepted);
+        let tab = state.tabs.active_tab();
+        assert_eq!(tab.headers[0].key, list[1].apply);
+        assert!(tab.header_suggest.is_none(), "picking closes the list");
+
+        // Value column: `{` lists dynamic variables; a pick replaces the token.
+        let _ = handle(&mut state, RequestMsg::HeaderValueChanged(0, "id-{".into()));
+        let pick = state
+            .tabs
+            .active_tab()
+            .header_suggestions(None)
+            .into_iter()
+            .find(|s| s.label == "$guid")
+            .expect("dynamic variables offered");
+        let _ = handle(
+            &mut state,
+            RequestMsg::HeaderSuggestionPicked(0, SuggestField::Value, pick.apply),
+        );
+        assert_eq!(state.tabs.active_tab().headers[0].value, "id-{{$guid}}");
+
+        // A removed row cannot be filled by a stale pick.
+        let _ = handle(&mut state, RequestMsg::HeaderRemoved(0));
+        let _ = handle(
+            &mut state,
+            RequestMsg::HeaderSuggestionPicked(0, SuggestField::Key, "Accept".into()),
+        );
+        assert!(state.tabs.active_tab().headers.is_empty());
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod body_completion_tests {
+    use super::*;
+    use iced_code_editor::{ArrowDirection, Message as Editor};
+
+    /// Text ending in a throwaway char, then Backspace: the same refresh path
+    /// as typing, without the process-wide editor focus typing requires
+    /// (parallel tests would race for it).
+    fn edited_to(state: &mut AppState, text: &str) {
+        let _ = handle(
+            state,
+            RequestMsg::BodyEdited(Editor::Paste(format!("{text}x"))),
+        );
+        let _ = handle(state, RequestMsg::BodyEdited(Editor::Backspace));
+    }
+
+    #[test]
+
+    fn typing_double_brace_lists_variables_and_a_pick_replaces_the_token() {
+        let dir = std::env::temp_dir().join(format!("rustman-bodyc-{}", uuid::Uuid::new_v4()));
+        let (mut state, _) = crate::app::boot::init_at(dir.clone());
+        state
+            .environments
+            .iter_mut()
+            .for_each(|e| e.is_active = false);
+        edited_to(&mut state, "a {");
+        assert!(
+            state.tabs.active_tab().body_completion.is_none(),
+            "one brace is plain JSON"
+        );
+        let _ = handle(
+            &mut state,
+            RequestMsg::BodyEdited(Editor::Paste("{gu".into())),
+        );
+        edited_to(&mut state, "");
+        let list = state.tabs.active_tab().body_completion.clone().unwrap();
+        assert_eq!(list.items[0].label, "$guid");
+        assert_eq!((list.back, list.forward), (4, 0));
+
+        let _ = handle(&mut state, RequestMsg::BodyCompletionAccepted);
+        let tab = state.tabs.active_tab();
+        assert_eq!(tab.body_editor.content(), "a {{$guid}}");
+        assert!(tab.body_completion.is_none());
+        assert_eq!(tab.body_vars.len(), 1, "the new token gets marked");
+        assert!(tab.modified);
+
+        // Editing inside a closed token replaces the whole token.
+        for _ in 0..2 {
+            let _ = handle(
+                &mut state,
+                RequestMsg::BodyEdited(Editor::ArrowKey(ArrowDirection::Left, false)),
+            );
+        }
+        let _ = handle(&mut state, RequestMsg::BodyEdited(Editor::Backspace));
+        let c = state.tabs.active_tab().body_completion.clone().unwrap();
+        assert_eq!(c.forward, 2, "the closing braces go too");
+        let _ = handle(
+            &mut state,
+            RequestMsg::BodyCompletionPicked("{{$timestamp}}".into()),
+        );
+        assert_eq!(
+            state.tabs.active_tab().body_editor.content(),
+            "a {{$timestamp}}"
+        );
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod var_card_tests {
+    use super::*;
+    use iced_code_editor::Message as Editor;
+
+    fn setup() -> (AppState, std::path::PathBuf, iced::Point) {
+        let dir = std::env::temp_dir().join(format!("rustman-bodycard-{}", uuid::Uuid::new_v4()));
+        let (mut state, _) = crate::app::boot::init_at(dir.clone());
+        state
+            .environments
+            .iter_mut()
+            .for_each(|e| e.is_active = false);
+        state
+            .environments
+            .push(crate::domain::environment::AppEnvironment {
+                id: "e".into(),
+                name: "Environment 1".into(),
+                variables: [("token".to_owned(), "abc".to_owned())].into(),
+                is_active: true,
+            });
+        let _ = handle(
+            &mut state,
+            RequestMsg::BodyEdited(Editor::Paste("{\"a\": \"{{token}}\"}".into())),
+        );
+        let tab = state.tabs.active_tab();
+        let rects = crate::ui::request::body::variable_rects(&tab.body_editor, &tab.body_vars);
+        let r = rects[0];
+        let middle = iced::Point::new(r.x + r.width / 2.0, r.y + r.height / 2.0);
+        (state, dir, middle)
+    }
+
+    fn open_card(state: &mut AppState, at: iced::Point) {
+        let _ = handle(state, RequestMsg::BodyHovered(Some(at)));
+        let _ = handle(state, RequestMsg::VarCardDue("token".into()));
+        assert!(state.tabs.active_tab().var_card.is_some());
+    }
+
+    #[test]
+    fn card_waits_for_the_delay_survives_the_walk_to_it_and_closes_on_leave() {
+        let (mut state, dir, at) = setup();
+        let _ = handle(&mut state, RequestMsg::BodyHovered(Some(at)));
+        assert!(state.tabs.active_tab().var_card.is_none());
+        let _ = handle(&mut state, RequestMsg::VarCardDue("other".into()));
+        assert!(state.tabs.active_tab().var_card.is_none());
+        let _ = handle(&mut state, RequestMsg::VarCardDue("token".into()));
+        let card = state.tabs.active_tab().var_card.clone().unwrap();
+        let crate::state::tabs::VarCardAnchor::Body(rect) = card.anchor else {
+            panic!("a body card hangs from its token");
+        };
+        assert!(rect.contains(at));
+        assert!(!card.revealed, "secrets start masked");
+
+        // Onto the card: the editor reports the mouse gone, the card stays.
+        let _ = handle(&mut state, RequestMsg::VarCardHover(true));
+        let _ = handle(&mut state, RequestMsg::BodyHovered(None));
+        assert!(state.tabs.active_tab().var_card.is_some());
+        let _ = handle(&mut state, RequestMsg::VarCardHover(false));
+        assert!(state.tabs.active_tab().var_card.is_none());
+
+        // Just below the token is on the way to the card; far away is not.
+        open_card(&mut state, at);
+        let below = iced::Point::new(at.x, rect.y + rect.height + 2.0);
+        let _ = handle(&mut state, RequestMsg::BodyHovered(Some(below)));
+        assert!(state.tabs.active_tab().var_card.is_some());
+        let far = iced::Point::new(at.x, at.y + 200.0);
+        let _ = handle(&mut state, RequestMsg::BodyHovered(Some(far)));
+        assert!(state.tabs.active_tab().var_card.is_none());
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_clicked_card_stays_until_closed_and_reveals_and_copies() {
+        let (mut state, dir, at) = setup();
+        open_card(&mut state, at);
+        let _ = handle(&mut state, RequestMsg::VarCardHover(true));
+        let _ = handle(&mut state, RequestMsg::VarCardPinned);
+        let _ = handle(&mut state, RequestMsg::VarCardHover(false));
+        let _ = handle(&mut state, RequestMsg::BodyHovered(None));
+        let _ = handle(&mut state, RequestMsg::VarCardRevealToggled);
+        let _ = handle(&mut state, RequestMsg::VarCardCopied("token".into()));
+        let card = state.tabs.active_tab().var_card.clone().unwrap();
+        assert!(card.revealed);
+        assert_eq!(card.copied.as_deref(), Some("token"));
+        let _ = handle(&mut state, RequestMsg::VarCardClosed);
+        assert!(state.tabs.active_tab().var_card.is_none());
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn clicking_a_token_pins_its_card_but_dragging_from_it_does_not() {
+        let (mut state, dir, at) = setup();
+        let _ = handle(&mut state, RequestMsg::BodyHovered(Some(at)));
+        let _ = handle(&mut state, RequestMsg::BodyEdited(Editor::MouseClick(at)));
+        assert!(state.tabs.active_tab().var_card.is_none());
+        let _ = handle(&mut state, RequestMsg::BodyEdited(Editor::MouseRelease));
+        let card = state.tabs.active_tab().var_card.clone().unwrap();
+        assert_eq!(card.names, ["token"]);
+        assert!(card.pinned, "a clicked card stays while the mouse moves");
+        let _ = handle(&mut state, RequestMsg::VarCardClosed);
+
+        let _ = handle(&mut state, RequestMsg::BodyEdited(Editor::MouseClick(at)));
+        let far = iced::Point::new(at.x + 40.0, at.y);
+        let _ = handle(&mut state, RequestMsg::BodyEdited(Editor::MouseDrag(far)));
+        let _ = handle(&mut state, RequestMsg::BodyEdited(Editor::MouseRelease));
+        assert!(state.tabs.active_tab().var_card.is_none());
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_request_opened_from_the_sidebar_has_its_tokens_marked() {
+        let mut saved = crate::app::request_ops::saved_request_from_tab(
+            &RequestTabState::new(),
+            String::new(),
+            String::new(),
+        );
+        saved.body = "{\"name\": \"{{body}}\"}".into();
+        saved.body_type = crate::domain::request::BodyType::Json;
+        let tab = RequestTabState::from_saved(&saved);
+        assert_eq!(tab.body_vars.len(), 1);
+        assert_eq!(tab.body_vars[0].name, "body");
+    }
+
+    #[test]
+    fn a_selection_drag_and_edits_never_leave_a_card_behind() {
+        let (mut state, dir, at) = setup();
+        let _ = handle(&mut state, RequestMsg::BodyEdited(Editor::MouseClick(at)));
+        let _ = handle(&mut state, RequestMsg::BodyHovered(Some(at)));
+        assert!(state.tabs.active_tab().body_hover.is_none());
+        let _ = handle(&mut state, RequestMsg::BodyEdited(Editor::MouseRelease));
+        open_card(&mut state, at);
+        let _ = handle(&mut state, RequestMsg::BodyEdited(Editor::Backspace));
+        assert!(state.tabs.active_tab().var_card.is_none());
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod header_var_card_tests {
+    use super::*;
+    use crate::state::tabs::{SuggestField, VarCardAnchor};
+
+    fn setup(key: &str, value: &str) -> (AppState, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("rustman-headercard-{}", uuid::Uuid::new_v4()));
+        let (mut state, _) = crate::app::boot::init_at(dir.clone());
+        let _ = handle(&mut state, RequestMsg::HeaderAdded);
+        let last = state.tabs.active_tab().headers.len() - 1;
+        let _ = handle(&mut state, RequestMsg::HeaderKeyChanged(last, key.into()));
+        let _ = handle(
+            &mut state,
+            RequestMsg::HeaderValueChanged(last, value.into()),
+        );
+        state.tabs.active_tab_mut().header_suggest = None;
+        (state, dir)
+    }
+
+    fn row(state: &AppState) -> usize {
+        state.tabs.active_tab().headers.len() - 1
+    }
+
+    #[test]
+    fn clicking_a_finished_variable_pins_its_card_instead_of_the_list() {
+        let (mut state, dir) = setup("X-Test", "Bearer {{auth}}");
+        let r = row(&state);
+        let _ = handle(
+            &mut state,
+            RequestMsg::HeaderSuggestOpened(r, SuggestField::Value),
+        );
+        let tab = state.tabs.active_tab();
+        assert!(tab.header_suggest.is_none());
+        let card = tab.var_card.clone().unwrap();
+        assert_eq!(card.names, ["auth"]);
+        assert_eq!(card.anchor, VarCardAnchor::Header(r, SuggestField::Value));
+        assert!(card.pinned && !card.mask_all);
+
+        // Typing edits the cell: the card gets out of the way.
+        let _ = handle(
+            &mut state,
+            RequestMsg::HeaderValueChanged(r, "Bearer {{auth}} {{".into()),
+        );
+        assert!(state.tabs.active_tab().var_card.is_none());
+        state.tabs.active_tab_mut().header_suggest = None;
+        let _ = handle(
+            &mut state,
+            RequestMsg::HeaderSuggestOpened(r, SuggestField::Value),
+        );
+        let tab = state.tabs.active_tab();
+        assert!(tab.var_card.is_none(), "an open {{{{ is still autocomplete");
+        assert!(tab.header_suggest.is_some());
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn hover_opens_after_the_delay_and_the_gap_to_the_card_is_forgiven() {
+        let (mut state, dir) = setup("Authorization", "{{value}}");
+        let (r, f) = (row(&state), SuggestField::Value);
+        let _ = handle(&mut state, RequestMsg::HeaderVarHovered(r, f, true));
+        assert!(state.tabs.active_tab().var_card.is_none());
+        let _ = handle(&mut state, RequestMsg::HeaderVarDue(r, f));
+        let card = state.tabs.active_tab().var_card.clone().unwrap();
+        assert!(!card.pinned);
+        assert!(card.mask_all, "a sensitive header's value starts masked");
+
+        // Out of the cell and onto the card.
+        let _ = handle(&mut state, RequestMsg::HeaderVarHovered(r, f, false));
+        let _ = handle(&mut state, RequestMsg::VarCardHover(true));
+        let _ = handle(&mut state, RequestMsg::VarCardLeaveDue);
+        assert!(state.tabs.active_tab().var_card.is_some());
+        // Off the card and away.
+        let _ = handle(&mut state, RequestMsg::VarCardHover(false));
+        let _ = handle(&mut state, RequestMsg::VarCardLeaveDue);
+        assert!(state.tabs.active_tab().var_card.is_none());
+
+        // Leaving before the delay ran out opens nothing.
+        let _ = handle(&mut state, RequestMsg::HeaderVarHovered(r, f, true));
+        let _ = handle(&mut state, RequestMsg::HeaderVarHovered(r, f, false));
+        let _ = handle(&mut state, RequestMsg::HeaderVarDue(r, f));
+        assert!(state.tabs.active_tab().var_card.is_none());
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod script_ui_tests {
+    use super::*;
+    use crate::state::tabs::ScriptPhase;
+    use iced_code_editor::Message as Editor;
+
+    fn setup() -> (AppState, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("rustman-scripts-{}", uuid::Uuid::new_v4()));
+        let (state, _) = crate::app::boot::init_at(dir.clone());
+        (state, dir)
+    }
+
+    #[test]
+    fn the_rail_switches_editors_and_a_pick_completes_the_word() {
+        let (mut state, dir) = setup();
+        let _ = handle(
+            &mut state,
+            RequestMsg::ScriptPhaseSelected(ScriptPhase::After),
+        );
+        // A throwaway char and Backspace: typing itself needs the
+        // process-wide editor focus, which parallel tests would race for.
+        let _ = handle(
+            &mut state,
+            RequestMsg::TestScriptEdited(Editor::Paste("x = pm.envz".into())),
+        );
+        let _ = handle(&mut state, RequestMsg::TestScriptEdited(Editor::Backspace));
+        let list = state.tabs.active_tab().script_completion.clone().unwrap();
+        assert_eq!(list.items[0].label, "pm.environment.set");
+
+        let _ = handle(&mut state, RequestMsg::ScriptCompletionMoved(true));
+        let _ = handle(&mut state, RequestMsg::ScriptCompletionAccepted);
+        let tab = state.tabs.active_tab();
+        assert_eq!(tab.test_editor.content(), "x = pm.environment.get");
+        assert!(tab.pre_request_editor.content().is_empty());
+        assert!(tab.script_completion.is_none());
+        assert!(tab.modified);
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_scripts_own_variable_is_offered_after_an_open_paren() {
+        let (mut state, dir) = setup();
+        let _ = handle(
+            &mut state,
+            RequestMsg::ScriptPhaseSelected(ScriptPhase::After),
+        );
+        let _ = handle(
+            &mut state,
+            RequestMsg::TestScriptEdited(Editor::Paste(
+                "var data = JSON.parse(responseBody)\nconsole.log(x".into(),
+            )),
+        );
+        let _ = handle(&mut state, RequestMsg::TestScriptEdited(Editor::Backspace));
+        let list = state.tabs.active_tab().script_completion.clone().unwrap();
+        assert_eq!(list.items[0].label, "data");
+        // Bookkeeping from the editor leaves the list alone; moving away does not.
+        let _ = handle(&mut state, RequestMsg::TestScriptEdited(Editor::Tick));
+        assert!(state.tabs.active_tab().script_completion.is_some());
+        let _ = handle(&mut state, RequestMsg::ScriptCompletionAccepted);
+        assert!(
+            state
+                .tabs
+                .active_tab()
+                .test_editor
+                .content()
+                .ends_with("console.log(data")
+        );
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn enabling_an_imported_script_uncomments_only_the_shown_phase() {
+        let (mut state, dir) = setup();
+        let marker = crate::services::import::postman::SCRIPT_MARKER;
+        let kept = format!("{marker} — port it)\n// var a = 1;\n");
+        let tab = state.tabs.active_tab_mut();
+        tab.test_editor = crate::state::tabs::make_code_editor(&kept, "js");
+        tab.pre_request_editor = crate::state::tabs::make_code_editor(&kept, "js");
+        tab.script_phase = ScriptPhase::After;
+
+        let _ = handle(&mut state, RequestMsg::ScriptImportEnabled);
+
+        let tab = state.tabs.active_tab();
+        assert_eq!(tab.test_editor.content(), "var a = 1;");
+        assert_eq!(tab.pre_request_editor.content(), kept);
+        assert!(tab.modified);
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

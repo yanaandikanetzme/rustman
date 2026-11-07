@@ -8,6 +8,9 @@ pub enum Orientation {
     Vertical,
 }
 
+/// The status bar under the panels.
+const DEFAULT_RESERVED_BOTTOM: f32 = 29.0;
+
 #[derive(Clone)]
 struct State {
     dragging: bool,
@@ -31,6 +34,7 @@ pub fn panel_splitter<'a, Message, Theme, Renderer>(
         panel_split,
         orientation,
         on_resize: Box::new(on_resize),
+        reserved_bottom: DEFAULT_RESERVED_BOTTOM,
         _phantom: std::marker::PhantomData,
     }
 }
@@ -39,7 +43,17 @@ pub struct PanelSplitter<'a, Message, Theme, Renderer> {
     panel_split: u16,
     orientation: Orientation,
     on_resize: Box<dyn Fn(u16) -> Message + 'a>,
+    reserved_bottom: f32,
     _phantom: std::marker::PhantomData<(Theme, Renderer)>,
+}
+
+impl<Message, Theme, Renderer> PanelSplitter<'_, Message, Theme, Renderer> {
+    /// More pixels taken below the panels, e.g. by the open Console: without
+    /// them a Horizontal drag lands above the cursor.
+    pub fn reserve_below(mut self, pixels: f32) -> Self {
+        self.reserved_bottom = DEFAULT_RESERVED_BOTTOM + pixels;
+        self
+    }
 }
 
 impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
@@ -89,17 +103,25 @@ where
 
     fn draw(
         &self,
-        _tree: &Tree,
-        _renderer: &mut Renderer,
+        tree: &Tree,
+        renderer: &mut Renderer,
         _theme: &Theme,
         _style: &renderer::Style,
-        _layout: Layout<'_>,
-        _cursor: mouse::Cursor,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
         _viewport: &Rectangle,
     ) {
-        // No visible handle: panels carry their own borders, and a drawn
-        // bar always looked bolted-on across themes. The area stays
-        // draggable (mouse_interaction below) — just invisible.
+        // Fill the drag area with the panel surface (an undrawn area showed
+        // the window background as a thick gap) and draw one hairline.
+        let state = tree.state.downcast_ref::<State>();
+        let active = state.dragging || cursor.is_over(layout.bounds());
+        crate::ui::widgets::seam::draw(
+            renderer,
+            layout.bounds(),
+            self.orientation == Orientation::Vertical,
+            crate::ui::widgets::seam::LineAt::Center,
+            active,
+        );
     }
     fn mouse_interaction(
         &self,
@@ -142,7 +164,7 @@ where
                 match self.orientation {
                     Orientation::Horizontal => {
                         let p = self.panel_split as f32 / 100.0;
-                        let fixed_bot = 29.0;
+                        let fixed_bot = self.reserved_bottom;
                         state.drag_origin =
                             (bounds.y - p * (viewport.height - fixed_bot - 8.0)) / (1.0 - p);
                         state.drag_total =

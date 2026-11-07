@@ -1,5 +1,5 @@
 use iced::{
-    Background, Border, Element, Length,
+    Background, Element, Length,
     widget::{Space, Text, button, column, container, mouse_area, row},
 };
 
@@ -9,26 +9,61 @@ use crate::{
     ui::{icons, request, response, sidebar, theme::Palette},
 };
 
+mod collections_modal;
+mod console;
+
+/// Thickness of the drag handle above the Console.
+const CONSOLE_HANDLE: f32 = 8.0;
 mod dialogs;
-mod header;
+mod docs;
+pub mod header;
 mod status_bar;
 mod style;
 mod tab_bar;
+pub mod tab_menus;
 
 use style::{icon_btn_style, icon_rail_style, sidebar_style, surface_style};
+
+/// The search box a menu focuses when it opens, for menus that have one.
+pub fn menu_search_id(menu: &str) -> Option<&'static str> {
+    match menu {
+        header::WORKSPACE_MENU => Some(header::WORKSPACE_SEARCH_ID),
+        tab_menus::TABS_MENU => Some(tab_menus::TABS_SEARCH_ID),
+        tab_menus::ENV_MENU => Some(tab_menus::ENV_SEARCH_ID),
+        _ => None,
+    }
+}
 
 pub fn view(state: &AppState) -> Element<'_, Message> {
     // Clicking anywhere outside an open collection menu dismisses it. Both
     // fire alongside any nested control's own press (parent-first), so row
     // clicks still toggle/open and right-clicks on another header still swap
     // the menu over — the nested message is published last and wins.
-    let shell: Element<Message> =
-        mouse_area(row![left_panel(state), main_area(state)].height(Length::Fill))
-            .on_press(Message::Sidebar(SidebarMsg::ContextMenuClosed))
-            .on_right_press(Message::Sidebar(SidebarMsg::ContextMenuClosed))
-            .into();
-    let main: Element<Message> = column![header::view(state), shell]
-        .height(Length::Fill)
+    // The snippet panel belongs to the request view; the environment editor
+    // and the example editor keep the full width.
+    let request_view = state.sidebar.environment_page.is_none()
+        && state.examples.editor.is_none()
+        && state.collection_docs.is_none();
+    let mut columns = row![left_panel(state), main_area(state)].height(Length::Fill);
+    if request_view && state.snippet_open {
+        columns = columns.push(crate::ui::snippet_panel::view(state));
+    }
+    let shell: Element<Message> = mouse_area(columns)
+        .on_press(Message::Sidebar(SidebarMsg::ContextMenuClosed))
+        .on_right_press(Message::Sidebar(SidebarMsg::ContextMenuClosed))
+        .into();
+    let mut workspace = column![header::view(state), shell].height(Length::Fill);
+    if state.console_open {
+        workspace = workspace
+            .push(crate::ui::widgets::height_splitter::height_splitter(
+                state.console_height,
+                |height| Message::Layout(crate::message::LayoutMsg::ConsoleResized(height)),
+            ))
+            .push(console::view(state));
+    }
+    let main: Element<Message> = workspace
+        .push(iced::widget::rule::horizontal(1).style(crate::ui::styles::divider))
+        .push(status_bar::status_bar(state))
         .into();
     #[cfg(feature = "self-update")]
     let root: Element<Message> = match crate::ui::update_banner::view(state) {
@@ -38,7 +73,42 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
     #[cfg(not(feature = "self-update"))]
     let root: Element<Message> = main;
 
-    if state.palette_open {
+    let root: Element<Message> = if let Some(toast) = &state.notification {
+        let overlay = container(iced::widget::opaque(crate::ui::notification::view(toast)))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_y(iced::alignment::Vertical::Bottom)
+            .align_x(
+                if toast.placement == crate::state::notifications::ToastPlacement::BottomLeft {
+                    iced::alignment::Horizontal::Left
+                } else {
+                    iced::alignment::Horizontal::Right
+                },
+            )
+            .padding(16);
+        iced::widget::stack![root, overlay].into()
+    } else {
+        root
+    };
+    if !state.sidebar.collection_delete_ids.is_empty() {
+        iced::widget::stack![
+            root,
+            iced::widget::opaque(dialogs::collection_delete_dialog(state))
+        ]
+        .into()
+    } else if state.sidebar.request_delete.is_some() {
+        iced::widget::stack![
+            root,
+            iced::widget::opaque(dialogs::request_delete_dialog(state))
+        ]
+        .into()
+    } else if state.examples.delete_asked.is_some() {
+        iced::widget::stack![
+            root,
+            iced::widget::opaque(dialogs::example_delete_dialog(state))
+        ]
+        .into()
+    } else if state.palette_open {
         iced::widget::stack![root, crate::ui::command_palette::view(state)].into()
     } else if state.close_confirm_tab.is_some() {
         iced::widget::stack![root, dialogs::close_confirm_dialog(state)].into()
@@ -50,6 +120,8 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
         iced::widget::stack![root, dialogs::save_dialog(state)].into()
     } else if state.curl_modal_open {
         iced::widget::stack![root, dialogs::curl_modal(state)].into()
+    } else if let Some(modal) = &state.collections_modal {
+        iced::widget::stack![root, collections_modal::view(state, modal)].into()
     } else if state.import_dialog_open {
         iced::widget::stack![root, dialogs::import_dialog(state)].into()
     } else if state.global_scripts_modal_open {
@@ -61,11 +133,16 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
 
 fn left_panel(state: &AppState) -> Element<'_, Message> {
     if state.sidebar.collapsed {
-        return container(icon_rail(state))
-            .style(sidebar_style)
-            .width(48)
-            .height(Length::Fill)
-            .into();
+        // No splitter here, so draw the hairline against the main area.
+        return row![
+            container(icon_rail(state))
+                .style(sidebar_style)
+                .width(48)
+                .height(Length::Fill),
+            iced::widget::rule::vertical(1.0).style(crate::ui::styles::divider),
+        ]
+        .height(Length::Fill)
+        .into();
     }
 
     let panel_content: Element<Message> = match state.sidebar.panel {
@@ -120,12 +197,10 @@ fn icon_rail(state: &AppState) -> Element<'_, Message> {
     }
 
     let settings_active = state.sidebar.panel == SidebarPanel::Settings;
-    let collapsed = state.sidebar.collapsed;
     container(
         column![
             top_col,
             Space::new().height(Length::Fill),
-            collapse_toggle_btn(collapsed),
             icon_btn(
                 icons::settings(),
                 SidebarPanel::Settings,
@@ -146,44 +221,6 @@ fn icon_rail(state: &AppState) -> Element<'_, Message> {
     .height(Length::Fill)
     .style(icon_rail_style)
     .into()
-}
-
-fn collapse_toggle_btn(collapsed: bool) -> Element<'static, Message> {
-    let icon = if collapsed {
-        icons::arrow_right()
-    } else {
-        icons::arrow_left()
-    };
-
-    let btn = button(
-        container(icon.size(13).color(Palette::text_subtle()))
-            .center_x(Length::Fill)
-            .center_y(Length::Fill),
-    )
-    .on_press(Message::Sidebar(SidebarMsg::ToggleCollapsed))
-    .style(|_t, s| iced::widget::button::Style {
-        background: if matches!(s, iced::widget::button::Status::Hovered) {
-            Some(Background::Color(Palette::hover()))
-        } else {
-            None
-        },
-        text_color: Palette::text_subtle(),
-        border: Border {
-            radius: 8.0.into(),
-            ..Default::default()
-        },
-        ..Default::default()
-    })
-    .width(30)
-    .height(26)
-    .padding(0);
-
-    container(btn)
-        .width(48)
-        .height(30)
-        .align_x(iced::alignment::Horizontal::Center)
-        .align_y(iced::alignment::Vertical::Center)
-        .into()
 }
 
 fn icon_btn(
@@ -216,16 +253,69 @@ fn icon_btn(
 }
 
 fn main_area(state: &AppState) -> Element<'_, Message> {
+    if let Some(env) = state
+        .sidebar
+        .environment_page
+        .as_ref()
+        .and_then(|id| state.environments.iter().find(|e| &e.id == id))
+    {
+        return crate::ui::environment_workspace::view(state, env);
+    }
+    if let Some(docs) = &state.collection_docs {
+        return column![
+            tab_bar::multi_tab_bar(state),
+            container(docs::view(state, docs))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(crate::ui::styles::content_surface)
+        ]
+            .height(Length::Fill)
+            .width(Length::Fill)
+            .into();
+    }
+    if let Some(editor) = &state.examples.editor {
+        return column![
+            tab_bar::multi_tab_bar(state),
+            crate::ui::examples::view(state, editor)
+        ]
+        .height(Length::Fill)
+        .width(Length::Fill)
+        .into();
+    }
     let active_tab = state.tabs.active_tab();
     let active_env = state.environments.iter().find(|e| e.is_active);
-    let url_bar = request::url_bar::view(active_tab, active_env);
+    // Mockup `.req-bar`: breadcrumb/name/actions row above the URL row.
+    let url_bar: Element<Message> = container(
+        column![
+            request::header::view(state),
+            request::url_bar::view(
+                active_tab,
+                active_env,
+                state.sidebar.context_menu.as_deref() == Some(request::url_bar::SEND_MENU),
+            )
+        ]
+        .spacing(8),
+    )
+    .padding([10, 16])
+    .width(Length::Fill)
+    .style(surface_content_style)
+    .into();
     let req_tabs = request::tabs::view(active_tab);
 
     let req_body: Element<Message> = match active_tab.active_request_tab {
         RequestTab::Params => request::params::view(active_tab, active_env),
-        RequestTab::Headers => request::headers::view(active_tab),
-        RequestTab::Body => request::body::view(active_tab),
-        RequestTab::Auth => request::auth::view(active_tab),
+        RequestTab::Headers => request::headers::view(
+            active_tab,
+            active_env,
+            state.show_auto_headers,
+            state.sidebar.context_menu.as_deref(),
+        ),
+        RequestTab::Body => request::body::view(
+            active_tab,
+            active_env,
+            state.sidebar.context_menu.as_deref(),
+        ),
+        RequestTab::Auth => request::auth::view(active_tab, active_env),
         RequestTab::Scripts => request::scripts::view(active_tab),
         // No longer a real tab (timeout moved to global Settings) — only
         // reachable via an old persisted session; fall back to Params.
@@ -240,21 +330,19 @@ fn main_area(state: &AppState) -> Element<'_, Message> {
         .style(surface_content_style)
         .width(Length::Fill);
 
-    let resp_status: Element<Message> = active_tab
-        .response
-        .as_ref()
-        .map(|r| response::status_bar::view(r))
-        .unwrap_or_else(|| Space::new().into());
-
     let resp_body: Element<Message> = match active_tab.active_response_tab {
-        ResponseTab::Body => response::body::view(active_tab, state.spinner_frame),
+        ResponseTab::Body => response::body::view(
+            active_tab,
+            state.spinner_frame,
+            state.sidebar.context_menu.as_deref() == Some(response::body::FORMAT_MENU),
+        ),
         ResponseTab::Headers => response::headers::view(active_tab),
         ResponseTab::Cookies => response::cookies::view(active_tab),
         ResponseTab::Tests => response::tests::view(active_tab),
     };
 
     let response_panel = container(
-        column![resp_status, response::tabs::view(active_tab), resp_body]
+        column![response::tabs::view(state), resp_body]
             .spacing(0)
             .height(Length::Fill),
     )
@@ -289,7 +377,12 @@ fn main_area(state: &AppState) -> Element<'_, Message> {
                 state.panel_split,
                 crate::ui::widgets::panel_splitter::Orientation::Horizontal,
                 splitter,
-            ),
+            )
+            .reserve_below(if state.console_open {
+                state.console_height + CONSOLE_HANDLE
+            } else {
+                0.0
+            }),
             response_panel.height(Length::FillPortion(resp_split)),
         ]
         .spacing(0)
@@ -313,8 +406,6 @@ fn main_area(state: &AppState) -> Element<'_, Message> {
             iced::widget::rule::horizontal(1.0).style(crate::ui::styles::divider),
             request::draft_banner::view(state).unwrap_or_else(|| Space::new().into()),
             middle,
-            iced::widget::rule::horizontal(1.0).style(crate::ui::styles::divider),
-            status_bar::status_bar(state),
         ]
         .spacing(0)
         .height(Length::Fill),

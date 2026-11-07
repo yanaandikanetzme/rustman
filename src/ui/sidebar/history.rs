@@ -60,7 +60,7 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
                         .font(crate::ui::theme::MONO),
                     // Long URLs clip to one line (see ui::tree_label); the
                     // full URL pops up on hover only on clear overflow.
-                    tree_label(entry.url.clone(), 12.0, state.sidebar_width - 70.0),
+                    tree_label(display_url(&entry.url), 12.0, state.sidebar_width - 70.0),
                 ]
                 .spacing(6)
                 .align_y(iced::Alignment::Center),
@@ -145,5 +145,27 @@ fn status_color(status: u16) -> iced::Color {
         400..=499 => Palette::WARNING,
         500..=599 => Palette::ERROR,
         _ => Palette::text_muted(),
+    }
+}
+
+// Presentation seam shared by the row label and its hover tooltip.
+fn display_url(url: &str) -> String {
+    crate::services::secrets::display_url(url)
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+    #[test]
+    fn security_history_url_masks_userinfo_query_and_fragment_without_mutation() {
+        for url in [
+            "https://user:synthetic-pass@example.test/a?api_key=synthetic-key&ok=yes#access_token=synthetic-fragment",
+            "{{base_url}}/a?%61pi_key=synthetic-key&ok=yes",
+        ] {
+            let shown = display_url(url);
+            assert!(!shown.contains("synthetic-"));
+            assert!(shown.contains("ok=yes"));
+            assert!(url.contains("synthetic-key"));
+        }
     }
 }

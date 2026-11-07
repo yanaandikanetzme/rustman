@@ -91,9 +91,8 @@ pub(super) fn handle(state: &mut AppState, msg: ResponseMsg) -> Task<Message> {
                 return Task::none();
             };
             if resp.is_binary || resp.body_stored {
-                state.status_message = Some(
-                    "Only complete text responses can be opened in the browser.".to_owned(),
-                );
+                state.status_message =
+                    Some("Only complete text responses can be opened in the browser.".to_owned());
                 return Task::none();
             }
             let html = resp.body.clone();
@@ -103,25 +102,26 @@ pub(super) fn handle(state: &mut AppState, msg: ResponseMsg) -> Task<Message> {
             // assets won't resolve, since the file has no original URL base.
             return Task::perform(
                 async move {
-                    let path = std::env::temp_dir().join(format!(
-                        "rustman-preview-{}-{}.html",
-                        std::process::id(),
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_millis())
-                            .unwrap_or(0)
-                    ));
-                    tokio::fs::write(&path, html.as_bytes())
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    open::that(&path).map_err(|e| e.to_string())?;
-                    Ok(())
+                    tokio::task::spawn_blocking(move || -> Result<_, String> {
+                        let preview = crate::services::preview_file::write(
+                            &std::env::temp_dir(),
+                            html.as_bytes(),
+                        )?;
+                        open::that(preview.as_ref()).map_err(|e| e.to_string())?;
+                        Ok(preview)
+                    })
+                    .await
+                    .map_err(|e| e.to_string())?
                 },
                 |result| Message::Response(ResponseMsg::BodyOpened(result)),
             );
         }
-        ResponseMsg::BodyOpened(Ok(())) => {
-            state.status_message = Some("HTML opened in your browser".to_owned());
+        ResponseMsg::BodyOpened(Ok(preview)) => {
+            state.browser_previews.push(preview);
+            if state.browser_previews.len() > 8 {
+                state.browser_previews.remove(0);
+            }
+            state.status_message = Some("Unmasked HTML opened in your browser".to_owned());
         }
         ResponseMsg::BodyOpened(Err(e)) => {
             state.status_message = Some(format!("Could not open browser: {e}"));
@@ -164,6 +164,36 @@ pub(super) fn handle(state: &mut AppState, msg: ResponseMsg) -> Task<Message> {
             let tab = state.tabs.active_tab_mut();
             let page = (tab.viewer_page + 1).min(tab.viewer_page_count().saturating_sub(1));
             tab.show_viewer_page(page);
+        }
+        ResponseMsg::ViewerWrapToggled => {
+            let editor = &mut state.tabs.active_tab_mut().response_editor;
+            editor.set_wrap_enabled(!editor.wrap_enabled());
+        }
+        ResponseMsg::BodyLangSelected(lang) => {
+            state.sidebar.context_menu = None;
+            let tab = state.tabs.active_tab_mut();
+            tab.body_preview = Some(false);
+            tab.set_body_lang(lang);
+        }
+        ResponseMsg::RevealToggled(key) => {
+            let shown = &mut state.tabs.active_tab_mut().revealed_response;
+            if !shown.remove(&key) {
+                shown.insert(key);
+            }
+        }
+        ResponseMsg::ClearResponse => {
+            state.sidebar.context_menu = None;
+            state.tabs.active_tab_mut().clear_response();
+        }
+        ResponseMsg::PreviewToggled => {
+            let tab = state.tabs.active_tab_mut();
+            tab.body_preview = Some(!tab.body_preview_on());
+        }
+        ResponseMsg::JsonNodeToggled(path) => {
+            let open = &mut state.tabs.active_tab_mut().json_open;
+            if !open.remove(&path) {
+                open.insert(path);
+            }
         }
         ResponseMsg::ConsoleEdited(action) => {
             let tab = state.tabs.active_tab_mut();
@@ -241,5 +271,29 @@ fn extension_for_content_type(content_type: &str) -> &'static str {
         "txt"
     } else {
         "bin"
+    }
+}
+
+#[cfg(test)]
+mod security_preview_tests {
+    use super::*;
+    #[test]
+    fn security_publication_preview_eviction_and_app_drop_cleanup() {
+        let dir =
+            std::env::temp_dir().join(format!("rustman-preview-state-{}", uuid::Uuid::new_v4()));
+        let (mut state, _) = crate::app::boot::init_at(dir.clone());
+        let mut paths = Vec::new();
+        for _ in 0..9 {
+            let preview =
+                crate::services::preview_file::write(&dir, b"synthetic-response").unwrap();
+            paths.push(preview.as_ref().to_path_buf());
+            let _ = handle(&mut state, ResponseMsg::BodyOpened(Ok(preview)));
+        }
+        assert_eq!(state.browser_previews.len(), 8);
+        assert!(!paths[0].exists());
+        assert!(paths[1..].iter().all(|p| p.exists()));
+        drop(state);
+        assert!(paths.iter().all(|p| !p.exists()));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

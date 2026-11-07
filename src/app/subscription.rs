@@ -11,7 +11,9 @@ use super::AppState;
 
 pub(crate) fn subscription(state: &AppState) -> Subscription<Message> {
     let global = event::listen_with(global_keys);
-    let kbd = if state.palette_open {
+    let kbd = if state.import_dialog_open {
+        event::listen_with(import_events)
+    } else if state.palette_open {
         Subscription::batch([global, event::listen_with(palette_keys)])
     } else {
         global
@@ -31,11 +33,12 @@ pub(crate) fn subscription(state: &AppState) -> Subscription<Message> {
         .tabs
         .tabs
         .iter()
-        .filter(|t| t.ws.connecting || t.ws.connected)
+        .filter(|t| t.ws.connection_id.is_some() && (t.ws.connecting || t.ws.connected))
         .map(|t| {
             Subscription::run_with(
                 WsConn {
                     tab_id: t.id.clone(),
+                    connection_id: t.ws.connection_id.unwrap(),
                     url: t.ws.url.clone(),
                 },
                 ws_stream,
@@ -44,6 +47,30 @@ pub(crate) fn subscription(state: &AppState) -> Subscription<Message> {
         .collect();
 
     let mut all = vec![kbd];
+    // Frames only while the search popup eases in or out.
+    if state.palette_anim.is_some() {
+        all.push(iced::window::frames().map(|t| Message::Palette(PaletteMsg::Frame(t))));
+    }
+    all.push(event::listen_with(modifier_keys));
+    if !state.sidebar.collection_delete_ids.is_empty() {
+        all.push(event::listen_with(collection_delete_keys));
+    } else if !state.sidebar.selected_collections.is_empty() {
+        all.push(event::listen_with(collection_selection_keys));
+    }
+    if state.sidebar.request_delete.is_some() {
+        all.push(event::listen_with(request_delete_keys));
+    }
+    if state.examples.delete_asked.is_some() {
+        all.push(event::listen_with(example_delete_keys));
+    }
+    if state.sidebar.search_open && !state.palette_open {
+        all.push(event::listen_with(sidebar_search_keys));
+    }
+    if state.sidebar.dragging_item.is_some() {
+        // Release outside the tree (or over a control that captures it) must
+        // still end the drag and restore the row's hover actions.
+        all.push(event::listen_with(sidebar_drag_end));
+    }
 
     // Autosave only while there is actually something new to save.
     //
@@ -59,7 +86,7 @@ pub(crate) fn subscription(state: &AppState) -> Subscription<Message> {
                 .map(|_| Message::App(crate::message::AppMsg::AutoSaveSession)),
         );
     }
-    if !code_editor_focused {
+    if !code_editor_focused && !state.import_dialog_open {
         all.push(event::listen_with(tab_key));
     }
     if state.tabs.tabs.iter().any(|t| t.is_loading) {
@@ -72,19 +99,140 @@ pub(crate) fn subscription(state: &AppState) -> Subscription<Message> {
     Subscription::batch(all)
 }
 
+fn import_events(event: Event, _status: event::Status, _window: window::Id) -> Option<Message> {
+    use crate::message::{ImportMsg, RequestMsg};
+    match event {
+        Event::Window(window::Event::CloseRequested) => Some(Message::App(
+            crate::message::AppMsg::WindowCloseRequested(_window),
+        )),
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(keyboard::key::Named::Escape),
+            ..
+        }) => Some(Message::Request(RequestMsg::CloseImportDialog)),
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(keyboard::key::Named::Enter),
+            modifiers,
+            ..
+        }) if modifiers.command() => Some(Message::Import(ImportMsg::Submit)),
+        Event::Window(window::Event::FileDropped(path)) => {
+            Some(Message::Import(ImportMsg::PathsSelected(vec![path])))
+        }
+        _ => None,
+    }
+}
+
+/// Track held Shift/Ctrl for multi-select clicks in the collection tree.
+/// Focus loss resets them, so a modifier released elsewhere is not stuck.
+fn modifier_keys(event: Event, _status: event::Status, _window: window::Id) -> Option<Message> {
+    use crate::message::SidebarMsg;
+    match event {
+        Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => {
+            Some(Message::Sidebar(SidebarMsg::ModifiersChanged(m)))
+        }
+        Event::Window(window::Event::Unfocused) => Some(Message::Sidebar(
+            SidebarMsg::ModifiersChanged(keyboard::Modifiers::default()),
+        )),
+        _ => None,
+    }
+}
+
+/// With collections multi-selected: Delete asks to delete them all, Escape
+/// clears the selection. Keys a focused text field consumed are ignored.
+fn collection_selection_keys(
+    event: Event,
+    status: event::Status,
+    _window: window::Id,
+) -> Option<Message> {
+    use crate::message::SidebarMsg;
+    use keyboard::key::Named;
+    if status == event::Status::Captured {
+        return None;
+    }
+    let Event::Keyboard(keyboard::Event::KeyPressed { key, .. }) = event else {
+        return None;
+    };
+    match key.as_ref() {
+        keyboard::Key::Named(Named::Delete) => {
+            Some(Message::Sidebar(SidebarMsg::DeleteSelectedCollections))
+        }
+        keyboard::Key::Named(Named::Escape) => {
+            Some(Message::Sidebar(SidebarMsg::CollectionSelectionCleared))
+        }
+        _ => None,
+    }
+}
+
+fn collection_delete_keys(
+    event: Event,
+    _status: event::Status,
+    _window: window::Id,
+) -> Option<Message> {
+    match event {
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(keyboard::key::Named::Escape),
+            ..
+        }) => Some(Message::Sidebar(
+            crate::message::SidebarMsg::CollectionDeleteCancelled,
+        )),
+        _ => None,
+    }
+}
+
+/// Escape cancels, Enter confirms the request delete dialog.
+fn request_delete_keys(
+    event: Event,
+    _status: event::Status,
+    _window: window::Id,
+) -> Option<Message> {
+    use crate::message::SidebarMsg;
+    match event {
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(keyboard::key::Named::Escape),
+            ..
+        }) => Some(Message::Sidebar(SidebarMsg::RequestDeleteCancelled)),
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(keyboard::key::Named::Enter),
+            ..
+        }) => Some(Message::Sidebar(SidebarMsg::RequestDeleteConfirmed)),
+        _ => None,
+    }
+}
+
+/// Escape cancels, Enter confirms the example delete dialog.
+fn example_delete_keys(
+    event: Event,
+    _status: event::Status,
+    _window: window::Id,
+) -> Option<Message> {
+    use crate::message::example::ExampleMsg;
+    match event {
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(keyboard::key::Named::Escape),
+            ..
+        }) => Some(Message::Example(ExampleMsg::DeleteCancelled)),
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(keyboard::key::Named::Enter),
+            ..
+        }) => Some(Message::Example(ExampleMsg::DeleteConfirmed)),
+        _ => None,
+    }
+}
+
 /// Identity + inputs for a tab's WebSocket subscription. `Hash` drives subscription
 /// identity, so the stream is kept alive while a tab stays connected.
 #[derive(Hash)]
 struct WsConn {
     tab_id: String,
+    connection_id: uuid::Uuid,
     url: String,
 }
 
 fn ws_stream(conn: &WsConn) -> impl iced::futures::Stream<Item = Message> + use<> {
     let url = conn.url.clone();
     let tab_id = conn.tab_id.clone();
+    let connection_id = conn.connection_id;
     iced::stream::channel(
-        256,
+        4,
         move |mut output: iced::futures::channel::mpsc::Sender<Message>| async move {
             use crate::services::websocket::WsEvent;
             match websocket::connect(url).await {
@@ -93,6 +241,7 @@ fn ws_stream(conn: &WsConn) -> impl iced::futures::Stream<Item = Message> + use<
                     let _ = output
                         .send(Message::WebSocket(WsMsg::Handshake {
                             tab_id: tab_id.clone(),
+                            connection_id,
                             sender: out_tx,
                         }))
                         .await;
@@ -107,10 +256,10 @@ fn ws_stream(conn: &WsConn) -> impl iced::futures::Stream<Item = Message> + use<
                             event = rx.recv() => {
                                 match event {
                                     Some(WsEvent::Text(t)) => {
-                                        let _ = output.send(Message::WebSocket(WsMsg::TextFrame(t))).await;
+                                        let _ = output.send(Message::WebSocket(WsMsg::TextFrame { tab_id: tab_id.clone(), connection_id, text: t })).await;
                                     }
                                     Some(WsEvent::Disconnected) | None => {
-                                        let _ = output.send(Message::WebSocket(WsMsg::Disconnected)).await;
+                                        let _ = output.send(Message::WebSocket(WsMsg::Disconnected { tab_id: tab_id.clone(), connection_id })).await;
                                         break;
                                     }
                                     _ => {}
@@ -120,14 +269,23 @@ fn ws_stream(conn: &WsConn) -> impl iced::futures::Stream<Item = Message> + use<
                     }
                 }
                 Err(e) => {
-                    let _ = output.send(Message::WebSocket(WsMsg::Error(e))).await;
+                    let _ = output
+                        .send(Message::WebSocket(WsMsg::Error {
+                            tab_id: tab_id.clone(),
+                            connection_id,
+                            error: e,
+                        }))
+                        .await;
                 }
             }
         },
     )
 }
 
-fn tab_key(event: Event, _status: event::Status, _window_id: window::Id) -> Option<Message> {
+fn tab_key(event: Event, status: event::Status, _window_id: window::Id) -> Option<Message> {
+    if status == event::Status::Captured {
+        return None;
+    }
     let Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) = event else {
         return None;
     };
@@ -156,9 +314,22 @@ fn global_keys(event: Event, _status: event::Status, window_id: window::Id) -> O
     };
 
     match key.as_ref() {
+        keyboard::Key::Character("p") if modifiers.command() && modifiers.shift() => {
+            Some(Message::Palette(PaletteMsg::OpenCommands))
+        }
+        // Postman's global search key; Ctrl+P keeps working.
+        keyboard::Key::Character("k") if modifiers.command() => {
+            Some(Message::Palette(PaletteMsg::Open))
+        }
         keyboard::Key::Character("p") if modifiers.command() => {
             Some(Message::Palette(PaletteMsg::Open))
         }
+        // Postman's tab search: the open-tabs list with its search box.
+        keyboard::Key::Character("a") if modifiers.command() && modifiers.shift() => Some(
+            Message::Sidebar(crate::message::SidebarMsg::ContextMenuOpened(
+                crate::ui::layout::tab_menus::TABS_MENU.to_owned(),
+            )),
+        ),
         keyboard::Key::Character("t") if modifiers.command() => {
             Some(Message::Request(RequestMsg::NewTab))
         }
@@ -243,4 +414,83 @@ fn palette_keys(event: Event, _status: event::Status, _id: window::Id) -> Option
         keyboard::Key::Named(Named::Enter) => Some(Message::Palette(PaletteMsg::Confirm)),
         _ => None,
     }
+}
+
+fn sidebar_drag_end(event: Event, _status: event::Status, _window: window::Id) -> Option<Message> {
+    matches!(
+        event,
+        Event::Mouse(iced::mouse::Event::ButtonReleased(
+            iced::mouse::Button::Left
+        )) | Event::Window(window::Event::Unfocused)
+    )
+    .then_some(Message::Sidebar(crate::message::SidebarMsg::ItemDragEnd))
+}
+
+#[cfg(test)]
+mod sidebar_drag_tests {
+    use super::*;
+
+    #[test]
+    fn import_dialog_keeps_window_close_requests_working() {
+        assert!(matches!(
+            import_events(
+                Event::Window(window::Event::CloseRequested),
+                event::Status::Ignored,
+                window::Id::unique(),
+            ),
+            Some(Message::App(crate::message::AppMsg::WindowCloseRequested(
+                _
+            )))
+        ));
+    }
+
+    #[test]
+    fn drag_ends_even_when_release_was_captured_or_window_loses_focus() {
+        for status in [event::Status::Captured, event::Status::Ignored] {
+            for event in [
+                Event::Mouse(iced::mouse::Event::ButtonReleased(
+                    iced::mouse::Button::Left,
+                )),
+                Event::Window(window::Event::Unfocused),
+            ] {
+                assert!(matches!(
+                    sidebar_drag_end(event, status, window::Id::unique()),
+                    Some(Message::Sidebar(crate::message::SidebarMsg::ItemDragEnd))
+                ));
+            }
+        }
+        assert!(
+            sidebar_drag_end(
+                Event::Mouse(iced::mouse::Event::ButtonReleased(
+                    iced::mouse::Button::Right
+                )),
+                event::Status::Ignored,
+                window::Id::unique()
+            )
+            .is_none()
+        );
+    }
+}
+
+fn sidebar_search_keys(
+    event: Event,
+    _status: event::Status,
+    _window: window::Id,
+) -> Option<Message> {
+    let Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) = event else {
+        return None;
+    };
+    if modifiers.command() || modifiers.alt() {
+        return None;
+    }
+    let msg = match key {
+        keyboard::Key::Named(keyboard::key::Named::ArrowDown) => {
+            crate::message::SidebarMsg::SearchMove(1)
+        }
+        keyboard::Key::Named(keyboard::key::Named::ArrowUp) => {
+            crate::message::SidebarMsg::SearchMove(-1)
+        }
+        _ => return None,
+    };
+    Some(Message::Sidebar(msg))
 }

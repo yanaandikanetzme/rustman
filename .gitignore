@@ -31,3 +31,11 @@ scripts/uploads/
 .commandcode
 .vscode
 .github
+
+# Local design mockups
+/agent/plan/mockup/
+
+# Internal security audit artifacts
+/docs/security/
+/progress-security.md
+/scripts/security/

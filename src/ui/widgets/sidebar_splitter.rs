@@ -27,12 +27,15 @@ pub fn sidebar_splitter<'a, Message, Theme, Renderer>(
     SidebarSplitter {
         width,
         on_resize: Box::new(on_resize),
+        mirrored: false,
         _phantom: std::marker::PhantomData,
     }
 }
 
 pub struct SidebarSplitter<'a, Message, Theme, Renderer> {
     width: f32,
+    /// Panel on the right of the handle: dragging left widens it.
+    mirrored: bool,
     on_resize: Box<dyn Fn(f32) -> Message + 'a>,
     _phantom: std::marker::PhantomData<(Theme, Renderer)>,
 }
@@ -77,15 +80,29 @@ where
 
     fn draw(
         &self,
-        _tree: &Tree,
-        _renderer: &mut Renderer,
+        tree: &Tree,
+        renderer: &mut Renderer,
         _theme: &Theme,
         _style: &renderer::Style,
-        _layout: Layout<'_>,
-        _cursor: mouse::Cursor,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
         _viewport: &Rectangle,
     ) {
-        // No visible handle — sidebar panel already has its own border.
+        // Fill the drag area so no window background shows as a gap; the
+        // visible divider is one hairline against the sidebar.
+        let state = tree.state.downcast_ref::<State>();
+        let active = state.dragging || cursor.is_over(layout.bounds());
+        crate::ui::widgets::seam::draw(
+            renderer,
+            layout.bounds(),
+            true,
+            if self.mirrored {
+                crate::ui::widgets::seam::LineAt::End
+            } else {
+                crate::ui::widgets::seam::LineAt::Start
+            },
+            active,
+        );
     }
     fn mouse_interaction(
         &self,
@@ -128,7 +145,12 @@ where
                 shell.capture_event();
             }
             Event::Mouse(mouse::Event::CursorMoved { position }) if state.dragging => {
-                let new_width = state.start_width + (position.x - state.start_x);
+                let dx = position.x - state.start_x;
+                let new_width = if self.mirrored {
+                    state.start_width - dx
+                } else {
+                    state.start_width + dx
+                };
                 if (new_width - self.width).abs() >= 1.0 {
                     shell.publish((self.on_resize)(new_width));
                     self.width = new_width;
@@ -155,5 +177,19 @@ where
 {
     fn from(splitter: SidebarSplitter<'a, Message, Theme, Renderer>) -> Self {
         Element::new(splitter)
+    }
+}
+
+/// Like [`sidebar_splitter`] for a panel on the *right* of the handle (the
+/// snippet panel): dragging left widens it, and the hairline sits against it.
+pub fn right_panel_splitter<'a, Message, Theme, Renderer>(
+    width: f32,
+    on_resize: impl Fn(f32) -> Message + 'a,
+) -> SidebarSplitter<'a, Message, Theme, Renderer> {
+    SidebarSplitter {
+        width,
+        on_resize: Box::new(on_resize),
+        mirrored: true,
+        _phantom: std::marker::PhantomData,
     }
 }

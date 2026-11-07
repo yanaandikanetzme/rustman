@@ -6,7 +6,10 @@ use super::AppState;
 
 mod app_msg;
 mod auth;
+mod collections_modal;
 mod drafts;
+mod environment_cell;
+mod examples;
 mod git;
 mod import;
 mod meta;
@@ -18,13 +21,127 @@ mod save_dialog;
 mod secrets;
 mod settings;
 mod sidebar;
+#[cfg(test)]
+mod sidebar_environments_tests;
+#[cfg(test)]
+mod sidebar_feedback_tests;
+mod sidebar_search;
 #[cfg(feature = "self-update")]
 mod updater;
+#[cfg(test)]
+mod url_variables_tests;
 mod ws;
 
 pub(crate) fn update(state: &mut AppState, message: Message) -> Task<Message> {
     let dirty = marks_session_dirty(&message);
+    let prune_examples = matches!(
+        &message,
+        Message::Sidebar(
+            crate::message::SidebarMsg::DeleteRequest { .. }
+                | crate::message::SidebarMsg::CollectionDeleteConfirmed
+                | crate::message::SidebarMsg::DeleteGroup(_)
+        )
+    );
+    // Requests reach the active tab through many paths (row release, drafts,
+    // search, palette, restore…), so refresh after everything except the
+    // high-frequency noise that cannot change the request.
+    let refresh_snippet = state.snippet_open
+        && !matches!(&message, Message::Request(crate::message::RequestMsg::UrlEdited(action)) if !request::url_action_edits_content(action))
+        && !matches!(
+            &message,
+            Message::Response(_)
+                | Message::Layout(
+                    LayoutMsg::SnippetWidthChanged(_)
+                        | LayoutMsg::SidebarWidthChanged(_)
+                        | LayoutMsg::PanelSplitChanged(_)
+                        | LayoutMsg::ConsoleResized(_)
+                        | LayoutMsg::SnippetCopied
+                )
+                | Message::Sidebar(
+                    crate::message::SidebarMsg::ItemDragOver(_)
+                        | crate::message::SidebarMsg::RowHoverEnd(_)
+                        | crate::message::SidebarMsg::FilterChanged(_)
+                        | crate::message::SidebarMsg::MenuFilterChanged(_)
+                        | crate::message::SidebarMsg::RecentlyClosedToggled
+                        | crate::message::SidebarMsg::ContextMenuOpened(_)
+                        | crate::message::SidebarMsg::ContextMenuClosed
+                        | crate::message::SidebarMsg::EnvironmentVariableHover(..)
+                )
+                | Message::Import(
+                    crate::message::ImportMsg::Edited(_)
+                        | crate::message::ImportMsg::PreviewScheduled { .. }
+                        | crate::message::ImportMsg::PreviewReady { .. }
+                        | crate::message::ImportMsg::CollectionNameChanged(_)
+                        | crate::message::ImportMsg::CreateEnvironmentChanged(_)
+                        | crate::message::ImportMsg::Clear
+                )
+                | Message::Request(
+                    crate::message::RequestMsg::TitleChanged(_)
+                        | crate::message::RequestMsg::UrlHovered(_)
+                        | crate::message::RequestMsg::BodyHovered(_)
+                        | crate::message::RequestMsg::BodyCompletionMoved(_)
+                        | crate::message::RequestMsg::BodyCompletionClosed
+                        | crate::message::RequestMsg::ScriptPhaseSelected(_)
+                        | crate::message::RequestMsg::ScriptCompletionMoved(_)
+                        | crate::message::RequestMsg::ScriptCompletionClosed
+                        | crate::message::RequestMsg::VarCardDue(_)
+                        | crate::message::RequestMsg::VarCardHover(_)
+                        | crate::message::RequestMsg::VarCardPinned
+                        | crate::message::RequestMsg::VarCardRevealToggled
+                        | crate::message::RequestMsg::VarCardCopied(_)
+                        | crate::message::RequestMsg::VarCardClosed
+                        | crate::message::RequestMsg::HeaderVarHovered(..)
+                        | crate::message::RequestMsg::HeaderVarDue(..)
+                        | crate::message::RequestMsg::VarCardLeaveDue
+                        | crate::message::RequestMsg::AutoHeadersToggled
+                        | crate::message::RequestMsg::UrlCompletionMoved(_)
+                        | crate::message::RequestMsg::UrlVariableValueChanged(_)
+                        | crate::message::RequestMsg::UrlVariableEnvironmentSelected(_)
+                        | crate::message::RequestMsg::UrlVariableEnvironmentNameChanged(_)
+                        | crate::message::RequestMsg::UrlVariableDismissed
+                        | crate::message::RequestMsg::UrlCompletionDismissed
+                )
+                | Message::Request(crate::message::RequestMsg::TabDragOver(_))
+                | Message::Palette(crate::message::PaletteMsg::Frame(_))
+        );
+    let edited = match &message {
+        Message::Request(msg) => request::edited_field(msg),
+        _ => None,
+    };
+    let had_editor = edited.map(|(row, field)| state.tabs.active_tab().shows_editor(row, field));
     let task = dispatch(state, message);
+    let mut task = task;
+    if !state.tabs.tabs.is_empty() {
+        state.tabs.active_tab_mut().sync_field_editors();
+        // A secret field swaps its masked input for its editor when it gains
+        // a variable (and back): keep the caret in it across the swap.
+        if let (Some((row, field)), Some(before)) = (edited, had_editor)
+            && before != state.tabs.active_tab().shows_editor(row, field)
+        {
+            task = Task::batch([
+                task,
+                iced::widget::operation::focus(crate::ui::request::cell::field_widget_id(
+                    row, field,
+                )),
+            ]);
+        }
+    }
+    if refresh_snippet {
+
+        crate::app::snippet::refresh(state);
+    }
+    if prune_examples {
+        let ids: std::collections::HashSet<_> = state
+            .requests
+            .values()
+            .flatten()
+            .map(|r| r.id.as_str())
+            .collect();
+        state
+            .examples
+            .items
+            .retain(|id, _| ids.contains(id.as_str()));
+    }
 
     if dirty {
         state.session_dirty = true;
@@ -41,6 +158,40 @@ pub(crate) fn update(state: &mut AppState, message: Message) -> Task<Message> {
 /// Expanded editors DO dirty on content edits (their write-back mutates the
 /// snapshot); navigation/selection/search inside them does not.
 pub(crate) fn marks_session_dirty(message: &Message) -> bool {
+    if let Message::Request(crate::message::RequestMsg::UrlEdited(action)) = message {
+        return request::url_action_edits_content(action);
+    }
+    if matches!(
+        message,
+        Message::Sidebar(
+            crate::message::SidebarMsg::EnvironmentCellOpened { .. }
+                | crate::message::SidebarMsg::EnvironmentCellEdited { .. }
+                | crate::message::SidebarMsg::EnvironmentCellPageChanged(_)
+                | crate::message::SidebarMsg::EnvironmentCellClosed
+        )
+    ) {
+        return false;
+    }
+    if matches!(
+        message,
+        Message::Layout(
+            LayoutMsg::ConsoleToggled
+                | LayoutMsg::ConsoleResized(_)
+                | LayoutMsg::ConsoleFilterSet(_)
+                | LayoutMsg::ConsoleCleared
+                | LayoutMsg::ConsoleCopied
+                | LayoutMsg::ConsoleRowToggled(_)
+                | LayoutMsg::SnippetCopied
+        )
+            | Message::Sidebar(crate::message::SidebarMsg::EnvironmentPageClosed)
+            | Message::App(crate::message::AppMsg::OpenTerminal)
+            | Message::Response(crate::message::ResponseMsg::ConsoleEdited(_))
+    ) {
+        return false;
+    }
+    if matches!(message, Message::Example(_)) {
+        return false;
+    }
     // Company-edition messages decide for themselves (contract C11).
     match message {
         Message::Draft(m) => return m.marks_session_dirty(),
@@ -57,22 +208,92 @@ pub(crate) fn marks_session_dirty(message: &Message) -> bool {
         message,
         Message::App(
             crate::message::AppMsg::AutoSaveSession
+                | crate::message::AppMsg::ToastDismissed(_)
                 | crate::message::AppMsg::Noop
                 | crate::message::AppMsg::SpinnerTick
+        )
+        | Message::Palette(crate::message::PaletteMsg::Frame(_))
+        | Message::Import(
+            crate::message::ImportMsg::Clear
+                | crate::message::ImportMsg::CollectionNameChanged(_)
+                | crate::message::ImportMsg::CreateEnvironmentChanged(_)
+                | crate::message::ImportMsg::PreviewScheduled { .. }
+                | crate::message::ImportMsg::PreviewReady { .. }
+                | crate::message::ImportMsg::OpenPostmanDialog
+                | crate::message::ImportMsg::Edited(_)
+                | crate::message::ImportMsg::Submit
+                | crate::message::ImportMsg::Clipboard
+                | crate::message::ImportMsg::ClipboardReady(_)
+                | crate::message::ImportMsg::ChooseFiles
+                | crate::message::ImportMsg::ChooseFolder
+                | crate::message::ImportMsg::PathsSelected(_)
+                | crate::message::ImportMsg::ModalOpened(_)
+                | crate::message::ImportMsg::ModalClosed
+                | crate::message::ImportMsg::ModalTabSelected(_)
+                | crate::message::ImportMsg::ModalFilterChanged(_)
+                | crate::message::ImportMsg::PickChooseFolder
+                | crate::message::ImportMsg::PickChooseFiles
+                | crate::message::ImportMsg::PickScanned(_)
+                | crate::message::ImportMsg::PickToggled(_)
+                | crate::message::ImportMsg::PickToggledAll
+                | crate::message::ImportMsg::ExportToggled(_)
+                | crate::message::ImportMsg::ExportToggledAll
+                | crate::message::ImportMsg::ExportFormatChanged(_)
+                | crate::message::ImportMsg::ExportIncludeEnvToggled
+                | crate::message::ImportMsg::ExportSubmit
         )
         // Expanded editors are transient UI: paging or expanding never
         // touches the persisted snapshot. A rejected oversized paste changes
         // nothing either — the old URL is kept. The import dialog chrome is
         // likewise UI-only until a parse lands.
+        // The tree search box is view state; nothing persisted changes.
+        | Message::Sidebar(
+            crate::message::SidebarMsg::FilterChanged(_)
+                | crate::message::SidebarMsg::MenuFilterChanged(_)
+                | crate::message::SidebarMsg::RecentlyClosedToggled
+                | crate::message::SidebarMsg::CollectionsSectionToggled
+                | crate::message::SidebarMsg::EnvironmentsSectionToggled
+                | crate::message::SidebarMsg::CollectionDeleteTextChanged(_)
+                | crate::message::SidebarMsg::CollectionDeleteCancelled
+                | crate::message::SidebarMsg::DeleteCollection(_)
+                | crate::message::SidebarMsg::SearchMove(_)
+                | crate::message::SidebarMsg::SearchClose
+                | crate::message::SidebarMsg::RowHoverEnd(_)
+                | crate::message::SidebarMsg::EnvironmentVariableHover(_, _, _)
+                // Hover; a drag's new order is persisted on ItemDragEnd.
+                | crate::message::SidebarMsg::ItemDragOver(_)
+        )
         | Message::Request(
             crate::message::RequestMsg::FormValueExpandToggled(_)
                 | crate::message::RequestMsg::FormValuePagePrev(_)
                 | crate::message::RequestMsg::FormValuePageNext(_)
+                | crate::message::RequestMsg::UrlHovered(_)
+                | crate::message::RequestMsg::BodyHovered(_)
+                | crate::message::RequestMsg::BodyCompletionMoved(_)
+                | crate::message::RequestMsg::BodyCompletionClosed
+                | crate::message::RequestMsg::ScriptPhaseSelected(_)
+                | crate::message::RequestMsg::ScriptCompletionMoved(_)
+                | crate::message::RequestMsg::ScriptCompletionClosed
+                | crate::message::RequestMsg::VarCardDue(_)
+                | crate::message::RequestMsg::VarCardHover(_)
+                | crate::message::RequestMsg::VarCardPinned
+                | crate::message::RequestMsg::VarCardRevealToggled
+                | crate::message::RequestMsg::VarCardCopied(_)
+                | crate::message::RequestMsg::VarCardClosed
+                | crate::message::RequestMsg::HeaderVarHovered(..)
+                | crate::message::RequestMsg::HeaderVarDue(..)
+                | crate::message::RequestMsg::VarCardLeaveDue
+                | crate::message::RequestMsg::UrlCompletionMoved(_)
+                | crate::message::RequestMsg::UrlVariableValueChanged(_)
+                | crate::message::RequestMsg::UrlVariableEnvironmentSelected(_)
+                | crate::message::RequestMsg::UrlVariableEnvironmentNameChanged(_)
+                | crate::message::RequestMsg::UrlVariableDismissed
+                | crate::message::RequestMsg::UrlCompletionDismissed
                 | crate::message::RequestMsg::OversizedUrlRejected(_)
                 | crate::message::RequestMsg::OpenImportDialog
                 | crate::message::RequestMsg::CloseImportDialog
                 | crate::message::RequestMsg::ImportFromClipboard
-                | crate::message::RequestMsg::ImportFromFile
+                | crate::message::RequestMsg::AutoHeadersToggled
         )
         // Saving or opening a response body only writes a file and a
         // transient status line; nothing in the persisted session snapshot
@@ -82,12 +303,126 @@ pub(crate) fn marks_session_dirty(message: &Message) -> bool {
                 | crate::message::ResponseMsg::BodySaved(_)
                 | crate::message::ResponseMsg::OpenBodyInBrowser
                 | crate::message::ResponseMsg::BodyOpened(_)
+                | crate::message::ResponseMsg::ViewerWrapToggled
+                | crate::message::ResponseMsg::BodyLangSelected(_)
+                | crate::message::ResponseMsg::PreviewToggled
+                | crate::message::ResponseMsg::ClearResponse
+                | crate::message::ResponseMsg::RevealToggled(_)
         )
     )
 }
 
 fn dispatch(state: &mut AppState, message: Message) -> Task<Message> {
+    // Background request widgets can still emit keyboard messages beneath
+    // a stack. The modal owns keyboard input until it is closed.
+    if state.import_dialog_open
+        && matches!(&message, Message::Request(m) if !matches!(m, crate::message::RequestMsg::CloseImportDialog))
+    {
+        return Task::none();
+    }
+    if (!state.sidebar.collection_delete_ids.is_empty()
+        || state.sidebar.request_delete.is_some()
+        || state.examples.delete_asked.is_some())
+        && matches!(&message, Message::Request(_) | Message::Palette(_))
+    {
+        return Task::none();
+    }
+    if blocks_example_exit(state, &message) {
+        return Task::none();
+    }
+    if state.collection_docs.is_some()
+        && let Message::Request(msg) = &message
+    {
+        use crate::message::RequestMsg;
+        match msg {
+            RequestMsg::CloseCurrentTab => {
+                state.collection_docs = None;
+                return Task::none();
+            }
+            RequestMsg::SwitchTab(_)
+            | RequestMsg::NewTab
+            | RequestMsg::NewWsTab
+            | RequestMsg::CloseTab(_) => state.collection_docs = None,
+            _ => {}
+        }
+    }
+    if state.sidebar.environment_page.is_some() {
+        if let Message::Request(msg) = &message {
+            use crate::message::RequestMsg;
+            match msg {
+                RequestMsg::CloseCurrentTab => {
+                    state.close_environment_workspace();
+                    return Task::none();
+                }
+                RequestMsg::SwitchTab(_)
+                | RequestMsg::NewTab
+                | RequestMsg::NewWsTab
+                | RequestMsg::CloseTab(_) => {
+                    state.close_environment_workspace();
+                }
+                _ => return Task::none(),
+            }
+        }
+        if matches!(
+            &message,
+            Message::Draft(crate::message::draft::DraftMsg::Open(_))
+        ) {
+            state.close_environment_workspace();
+        }
+    }
+    if state.examples.editor.is_some() {
+        if let Message::Request(msg) = &message {
+            use crate::message::RequestMsg;
+            match msg {
+                RequestMsg::SaveRequest => {
+                    return examples::handle(state, crate::message::example::ExampleMsg::Save);
+                }
+                RequestMsg::Send => {
+                    state.status_message =
+                        Some("Examples are edited without sending HTTP requests.".into());
+                    return Task::none();
+                }
+                RequestMsg::SwitchTab(_)
+                | RequestMsg::NewTab
+                | RequestMsg::NewWsTab
+                | RequestMsg::CloseTab(_)
+                | RequestMsg::CloseCurrentTab => {
+                    if examples::protect(state) {
+                        return Task::none();
+                    }
+                    state.examples.editor = None;
+                }
+                _ => return Task::none(),
+            }
+        }
+        if matches!(
+            &message,
+            Message::Sidebar(
+                crate::message::SidebarMsg::RequestOpened(_)
+                    | crate::message::SidebarMsg::EnvironmentOpened(_)
+                    | crate::message::SidebarMsg::HistoryEntryOpened(_)
+                    | crate::message::SidebarMsg::DeleteRequest { .. }
+                    | crate::message::SidebarMsg::DeleteCollection(_)
+                    | crate::message::SidebarMsg::DeleteGroup(_)
+            )
+        ) {
+            if examples::protect(state) {
+                return Task::none();
+            }
+            state.examples.editor = None;
+        }
+        if matches!(
+            &message,
+            Message::Draft(crate::message::draft::DraftMsg::Open(_))
+        ) {
+            if examples::protect(state) {
+                return Task::none();
+            }
+            state.examples.editor = None;
+        }
+    }
     match message {
+        Message::Example(msg) => examples::handle(state, msg),
         Message::Sidebar(msg) => sidebar::handle(state, msg),
         Message::Request(msg) => request::handle(state, msg),
         Message::Response(msg) => response::handle(state, msg),
@@ -109,8 +444,29 @@ fn dispatch(state: &mut AppState, message: Message) -> Task<Message> {
     }
 }
 
+fn blocks_example_exit(state: &mut AppState, message: &Message) -> bool {
+    let exit = matches!(
+        message,
+        Message::App(crate::message::AppMsg::WindowCloseRequested(_))
+    );
+    #[cfg(feature = "self-update")]
+    let exit = exit || matches!(message, Message::Update(crate::message::UpdateMsg::Restart));
+    exit && examples::protect(state)
+}
+
 fn handle_layout(state: &mut AppState, msg: LayoutMsg) -> Task<Message> {
     match msg {
+        LayoutMsg::ConsoleToggled => state.console_open = !state.console_open,
+        LayoutMsg::ConsoleResized(height) => state.console_height = height,
+        LayoutMsg::ConsoleFilterSet(filter) => {
+            state.console.filter = filter;
+            state.sidebar.context_menu = None;
+        }
+        LayoutMsg::ConsoleCleared => state.console.clear(),
+        LayoutMsg::ConsoleCopied => {
+            return iced::clipboard::write::<Message>(state.console.to_text());
+        }
+        LayoutMsg::ConsoleRowToggled(key) => state.console.toggle(key),
         LayoutMsg::ZoomIn => state.ui_scale = (state.ui_scale + 0.1).min(2.0),
         LayoutMsg::ZoomOut => state.ui_scale = (state.ui_scale - 0.1).max(0.5),
         LayoutMsg::ZoomReset => state.ui_scale = 1.0,
@@ -121,6 +477,34 @@ fn handle_layout(state: &mut AppState, msg: LayoutMsg) -> Task<Message> {
         }
         LayoutMsg::SidebarWidthChanged(width) => {
             state.sidebar_width = width.clamp(160.0, 600.0);
+        }
+        LayoutMsg::SnippetToggled => {
+            state.snippet_open = !state.snippet_open;
+            crate::app::snippet::refresh(state);
+        }
+        LayoutMsg::SnippetWidthChanged(width) => {
+            state.snippet_width =
+                width.clamp(crate::app::snippet::MIN_W, crate::app::snippet::MAX_W);
+        }
+        LayoutMsg::SnippetLangChanged(lang) => {
+            state.snippet_lang = lang;
+            crate::app::snippet::refresh(state);
+        }
+        LayoutMsg::SnippetCopied => {
+            return match crate::app::snippet::code(
+                state.tabs.active_tab(),
+                state.snippet_lang,
+                state.active_env(),
+            ) {
+                Ok(cmd) => {
+                    state.status_message = Some("Unmasked snippet copied".to_owned());
+                    iced::clipboard::write::<Message>(cmd)
+                }
+                Err(err) => {
+                    state.status_message = Some(err);
+                    Task::none()
+                }
+            };
         }
     }
     Task::none()

@@ -159,7 +159,30 @@ pub fn tree_label_styled(
     font: Option<iced::Font>,
     color: iced::Color,
 ) -> Element<'static, Message> {
-    let mono = font.is_some();
+    label_impl(name, size, avail_px, font, font.is_some(), color)
+}
+
+/// Like [`tree_label`] in a heavier UI-font weight (e.g. semibold collection
+/// names). Measured with the regular face, so the budget is shrunk a little
+/// to cover the wider bold glyphs.
+pub fn tree_label_weighted(
+    name: String,
+    size: f32,
+    avail_px: f32,
+    font: iced::Font,
+    color: iced::Color,
+) -> Element<'static, Message> {
+    label_impl(name, size, avail_px * 0.94, Some(font), false, color)
+}
+
+fn label_impl(
+    name: String,
+    size: f32,
+    avail_px: f32,
+    font: Option<iced::Font>,
+    mono: bool,
+    color: iced::Color,
+) -> Element<'static, Message> {
     // Labels are measured on every frame: names past the render limit skip
     // measuring and go straight to truncation, so a pathological name can
     // never cost megabytes of font lookups per frame.
@@ -186,11 +209,31 @@ pub fn tree_label_styled(
         tip = tip.font(font);
     }
     let tip_text = tip_text(&name);
+    // The full name of a truncated row: a framed card under the row, shown
+    // only after the pointer rests, so sweeping the tree stays quiet.
     iced::widget::tooltip(
         tip,
-        text(tip_text).size(12).color(Palette::text()),
-        iced::widget::tooltip::Position::FollowCursor,
+        iced::widget::container(text(tip_text).size(12).color(Palette::text()))
+            .padding([4, 8])
+            .max_width(420)
+            .style(|_| iced::widget::container::Style {
+                background: Some(iced::Background::Color(Palette::surface_raised())),
+                border: iced::Border {
+                    color: Palette::border(),
+                    width: 1.0,
+                    radius: 4.0.into(),
+                },
+                shadow: iced::Shadow {
+                    color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.3),
+                    offset: iced::Vector::new(0.0, 2.0),
+                    blur_radius: 8.0,
+                },
+                ..Default::default()
+            }),
+        iced::widget::tooltip::Position::Bottom,
     )
+    .gap(4)
+    .delay(std::time::Duration::from_millis(700))
     .into()
 }
 

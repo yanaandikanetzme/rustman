@@ -9,7 +9,7 @@ use crate::{
     services::repos::LOCAL_ID,
     ui::{
         icons,
-        theme::{MONO, Palette},
+        theme::{MONO, Palette, TEXT_LG, TEXT_SM},
         tree_label::{tree_label, tree_label_styled},
     },
 };
@@ -17,6 +17,20 @@ use crate::{
 const SIDE: f32 = 12.0;
 
 pub fn view(state: &AppState) -> Element<'_, Message> {
+    if state.db.is_none() {
+        return container(
+            column![
+                text("Git unavailable").size(TEXT_LG).color(Palette::text()),
+                text("Restore access to local storage and restart before using Git.")
+                    .size(TEXT_SM)
+                    .color(Palette::text_muted()),
+            ]
+            .spacing(8),
+        )
+        .padding(12)
+        .width(Length::Fill)
+        .into();
+    }
     let mut root = column![
         title_bar(),
         repo_card(state),
