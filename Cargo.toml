@@ -51,7 +51,7 @@ reqwest = { version = "0.13", default-features = false, features = [
 
 # Async runtime (trimmed: task/select/sync/fs only — net, io, signal and
 # process come transitively only if someone actually needs them)
-tokio = { version = "1", features = ["macros", "rt", "sync", "time", "fs"] }
+tokio = { version = "1", features = ["macros", "rt", "sync", "time", "fs", "net", "io-util"] }
 # Cooperative cancellation for background jobs (CancellationToken)
 tokio-util = "0.7"
 
