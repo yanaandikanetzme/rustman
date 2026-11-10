@@ -340,6 +340,7 @@ fn dispatch(state: &mut AppState, message: Message) -> Task<Message> {
                 return Task::none();
             }
             RequestMsg::SwitchTab(_)
+            | RequestMsg::TabDragStart(_)
             | RequestMsg::NewTab
             | RequestMsg::NewWsTab
             | RequestMsg::CloseTab(_) => state.collection_docs = None,
@@ -355,6 +356,7 @@ fn dispatch(state: &mut AppState, message: Message) -> Task<Message> {
                     return Task::none();
                 }
                 RequestMsg::SwitchTab(_)
+            | RequestMsg::TabDragStart(_)
                 | RequestMsg::NewTab
                 | RequestMsg::NewWsTab
                 | RequestMsg::CloseTab(_) => {
@@ -383,6 +385,7 @@ fn dispatch(state: &mut AppState, message: Message) -> Task<Message> {
                     return Task::none();
                 }
                 RequestMsg::SwitchTab(_)
+            | RequestMsg::TabDragStart(_)
                 | RequestMsg::NewTab
                 | RequestMsg::NewWsTab
                 | RequestMsg::CloseTab(_)
