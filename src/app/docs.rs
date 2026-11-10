@@ -223,6 +223,7 @@ pub(crate) fn open(state: &mut AppState, collection_id: &str) {
     if state.examples.editor.as_ref().is_some_and(|e| e.dirty) {
         return;
     }
+    state.mocks.page = None;
     let lang = state
         .collection_docs
         .as_ref()

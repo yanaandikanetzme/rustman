@@ -477,7 +477,18 @@ pub fn serve(
         64,
         move |mut out: iced::futures::channel::mpsc::Sender<MockEvent>| async move {
             use futures_util::SinkExt as _;
-            let listener = match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+            // A restart can race the previous listener closing: retry briefly.
+            let mut bound = tokio::net::TcpListener::bind(("127.0.0.1", port)).await;
+            for _ in 0..10 {
+                match &bound {
+                    Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        bound = tokio::net::TcpListener::bind(("127.0.0.1", port)).await;
+                    }
+                    _ => break,
+                }
+            }
+            let listener = match bound {
                 Ok(l) => l,
                 Err(e) => {
                     let msg = if e.kind() == std::io::ErrorKind::AddrInUse {

@@ -96,6 +96,7 @@ pub(crate) fn subscription(state: &AppState) -> Subscription<Message> {
         );
     }
     all.extend(ws_subs);
+    all.extend(super::mocks::subscriptions(state));
     Subscription::batch(all)
 }
 

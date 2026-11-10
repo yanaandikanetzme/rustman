@@ -4,6 +4,7 @@ pub mod auth;
 pub mod draft;
 pub mod example;
 pub mod meta;
+pub mod mock;
 pub mod review;
 pub mod secrets;
 
@@ -38,6 +39,7 @@ pub enum Message {
     Secrets(secrets::SecretsMsg),
     #[allow(dead_code)]
     Review(review::ReviewMsg),
+    Mock(mock::MockMsg),
 }
 
 // ── Sidebar ───────────────────────────────────────────────────────────────────

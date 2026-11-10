@@ -13,6 +13,7 @@ mod examples;
 mod git;
 mod import;
 mod meta;
+mod mocks;
 mod palette;
 mod request;
 mod response;
@@ -330,6 +331,50 @@ fn dispatch(state: &mut AppState, message: Message) -> Task<Message> {
     if blocks_example_exit(state, &message) {
         return Task::none();
     }
+    if state.mocks.page.is_some() {
+        use crate::message::{RequestMsg, SidebarMsg};
+        match &message {
+            Message::Request(RequestMsg::CloseCurrentTab) => {
+                state.mocks.page = None;
+                return Task::none();
+            }
+            Message::Request(
+                RequestMsg::SwitchTab(_)
+                | RequestMsg::TabDragStart(_)
+                | RequestMsg::NewTab
+                | RequestMsg::NewWsTab
+                | RequestMsg::CloseTab(_),
+            )
+            | Message::Sidebar(
+                SidebarMsg::RequestOpened(_)
+                | SidebarMsg::EnvironmentOpened(_)
+                | SidebarMsg::HistoryEntryOpened(_),
+            )
+            | Message::Draft(crate::message::draft::DraftMsg::Open(_)) => state.mocks.page = None,
+            _ => {}
+        }
+    }
+    // Saved requests or examples may have changed: running mocks follow.
+    let refresh_mocks = !state.mocks.running.is_empty()
+        && matches!(
+            &message,
+            Message::Example(_)
+                | Message::SaveDialog(_)
+                | Message::Request(crate::message::RequestMsg::SaveRequest)
+                | Message::Sidebar(
+                    crate::message::SidebarMsg::DeleteRequest { .. }
+                        | crate::message::SidebarMsg::DeleteGroup(_)
+                )
+        );
+    if refresh_mocks {
+        let task = update_inner(state, message);
+        crate::app::mocks::refresh_routes(state);
+        return task;
+    }
+    update_inner(state, message)
+}
+
+fn update_inner(state: &mut AppState, message: Message) -> Task<Message> {
     if state.collection_docs.is_some()
         && let Message::Request(msg) = &message
     {
@@ -444,6 +489,7 @@ fn dispatch(state: &mut AppState, message: Message) -> Task<Message> {
         Message::Auth(msg) => auth::handle(state, msg),
         Message::Secrets(msg) => secrets::handle(state, msg),
         Message::Review(msg) => review::handle(state, msg),
+        Message::Mock(msg) => mocks::handle(state, msg),
     }
 }
 
