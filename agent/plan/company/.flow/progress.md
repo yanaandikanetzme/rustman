@@ -57,6 +57,14 @@ unverified. `—` means unclaimed; status is not a claim that code is absent.
   building: which examples answer a request (method + path match, then
   `x-mock-response-name` / first example), port choice and conflicts, and
   whether mocks auto-start on launch. Unclaimed; no code yet.
+  Mockup (local, 2026-11-10): `../mockup/png/15`–`18-rustman-mock-servers-*`
+  (detail + create, dark/light; source `../mockup/pages/rustman-mock-servers.html`).
+  MOCK SERVERS is a sidebar section under ENVIRONMENTS with a visible `+`
+  (not a rail icon); rows show status dot, name, `:port · collection`. A mock
+  opens as a tab: mock URL + Copy/New request, facts (collection,
+  environment, delay, calls), Call log / Routes / Settings. Create tab:
+  name, collection, port (free check), environment, save `{{mock_url}}`,
+  delay, start on launch; right side previews the routes it will answer.
 
 - [X] Claude, 2026-11-10, `fix/overview-mocking`: clicking a tab (including
   the active one) now closes the collection Overview and the environment
