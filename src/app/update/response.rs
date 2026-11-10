@@ -199,6 +199,14 @@ pub(super) fn handle(state: &mut AppState, msg: ResponseMsg) -> Task<Message> {
             let tab = state.tabs.active_tab_mut();
             tab.console_editor.perform(action);
         }
+        ResponseMsg::HtmlPreviewAction(i, action) => {
+            // Read-only: selection and movement apply, edits never do.
+            if !action.is_edit()
+                && let Some(view) = state.tabs.active_tab_mut().html_views.get_mut(i)
+            {
+                view.content.perform(action);
+            }
+        }
     }
     Task::none()
 }

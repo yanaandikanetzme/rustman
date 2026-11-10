@@ -8,5 +8,6 @@ pub mod mini;
 pub mod panel_splitter;
 pub mod seam;
 pub mod sidebar_splitter;
+pub mod wheel_passthrough;
 
 pub mod popup;

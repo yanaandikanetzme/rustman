@@ -189,9 +189,58 @@ fn class_kind(raw: &str) -> Option<DumpKind> {
     value.split_whitespace().find_map(DumpKind::from_class)
 }
 
+/// Colour runs of one text line: byte ranges within that line.
+pub type LineRuns = Vec<(std::ops::Range<usize>, DumpKind)>;
+
+/// A block as plain text plus its colour runs per line, so the preview can
+/// show it in a selectable editor that keeps the dump colours.
+pub fn block_text(block: &Block) -> (String, Vec<LineRuns>) {
+    match block {
+        Block::Text(t) => (t.clone(), Vec::new()),
+        Block::Dump(spans) => {
+            let mut text = String::new();
+            let mut lines: Vec<LineRuns> = vec![Vec::new()];
+            let mut col = 0;
+            for (t, kind) in spans {
+                text.push_str(t);
+                for (i, part) in t.split('\n').enumerate() {
+                    if i > 0 {
+                        lines.push(Vec::new());
+                        col = 0;
+                    }
+                    if !part.is_empty() {
+                        lines
+                            .last_mut()
+                            .expect("starts with a line")
+                            .push((col..col + part.len(), *kind));
+                        col += part.len();
+                    }
+                }
+            }
+            (text, lines)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dump_runs_are_split_per_line() {
+        let block = Block::Dump(vec![
+            ("array:1".into(), DumpKind::Note),
+            (" [\n  ".into(), DumpKind::Default),
+            ("\"a\"".into(), DumpKind::Key),
+            ("\n]".into(), DumpKind::Default),
+        ]);
+        let (text, lines) = block_text(&block);
+        assert_eq!(text, "array:1 [\n  \"a\"\n]");
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], vec![(0..7, DumpKind::Note), (7..9, DumpKind::Default)]);
+        assert_eq!(lines[1], vec![(0..2, DumpKind::Default), (2..5, DumpKind::Key)]);
+        assert_eq!(lines[2], vec![(0..1, DumpKind::Default)]);
+    }
 
     const DD: &str = r#"<script> Sfdump = window.Sfdump || (function (doc) { var a = 1 < 2; })(document); </script><style>pre.sf-dump{color:#FF8400}</style><pre class=sf-dump id=sf-dump-1 data-indent-pad="  "><span class=sf-dump-note>array:2</span> [<samp data-depth=1 class=sf-dump-expanded>
   <span class=sf-dump-index>0</span> => <span class=sf-dump-num>11</span>

@@ -392,6 +392,9 @@ pub struct RequestTabState {
     /// Preview blocks of an HTML body (coloured dump blocks + readable
     /// text). Empty for non-HTML; refreshed with `html_fallback_text`.
     pub html_blocks: Vec<crate::services::html_preview::Block>,
+    /// `html_blocks` as read-only editors, so preview text can be selected
+    /// and copied. Rebuilt with `html_blocks`.
+    pub html_views: Vec<HtmlBlockView>,
     /// Paths of the expanded rows in the JSON preview table. Cleared on
     /// every new response.
     pub json_open: std::collections::HashSet<String>,
@@ -461,6 +464,15 @@ pub enum EditKind {
 
 /// A restorable checkpoint of the text-editable request fields. The body and
 /// script editors are excluded — they manage their own undo history.
+/// One HTML preview block in a read-only editor: selectable, Ctrl+C copies.
+pub struct HtmlBlockView {
+    pub content: iced::widget::text_editor::Content,
+    /// A VarDumper block (dark, coloured); otherwise readable page text.
+    pub dump: bool,
+    /// Colour runs per line, read by the preview's highlighter.
+    pub runs: std::sync::Arc<Vec<crate::services::html_preview::LineRuns>>,
+}
+
 #[derive(Clone)]
 pub struct EditSnapshot {
     url: String,
@@ -540,6 +552,7 @@ impl RequestTabState {
             viewer_page_starts: Vec::new(),
             html_fallback_text: None,
             html_blocks: Vec::new(),
+            html_views: Vec::new(),
             json_open: std::collections::HashSet::new(),
             revealed_response: std::collections::HashSet::new(),
             viewer_page: 0,
@@ -911,6 +924,18 @@ impl RequestTabState {
             (Some(_), Some(resp)) => crate::services::html_preview::blocks(&resp.body),
             _ => Vec::new(),
         };
+        self.html_views = self
+            .html_blocks
+            .iter()
+            .map(|block| {
+                let (text, runs) = crate::services::html_preview::block_text(block);
+                HtmlBlockView {
+                    content: iced::widget::text_editor::Content::with_text(&text),
+                    dump: matches!(block, crate::services::html_preview::Block::Dump(_)),
+                    runs: std::sync::Arc::new(runs),
+                }
+            })
+            .collect();
     }
 
     /// Re-fill the viewer for a toolbar format pick: `Raw` shows the body as
