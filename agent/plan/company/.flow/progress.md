@@ -48,6 +48,24 @@ unverified. `—` means unclaimed; status is not a claim that code is absent.
 
 ## Active task details
 
+- [ ] Planned (user request 2026-11-10): Mock servers. A new sidebar
+  section/tab placed right after Environments, where the user creates and
+  manages mock servers (Postman-style): pick a collection, serve its saved
+  examples on a local port, list running mocks with their URL, start/stop
+  and delete. Keep the create action visible (`+` on the section header,
+  empty state with a Create mock server button). Open points before
+  building: which examples answer a request (method + path match, then
+  `x-mock-response-name` / first example), port choice and conflicts, and
+  whether mocks auto-start on launch. Unclaimed; no code yet.
+
+- [X] Claude, 2026-11-10, `fix/overview-mocking`: clicking a tab (including
+  the active one) now closes the collection Overview and the environment
+  page; tab presses arrive as `TabDragStart`, which the guard ignored
+  (`f9e4787`, regression test). HTML Preview blocks are read-only editors,
+  so dump and page text can be selected and copied with Ctrl+C, dump
+  colours kept via a highlighter; wheel scrolling still moves the page
+  (`27d37d5`). Native app check by the user still pending.
+
 - [X] Claude, 2026-11-05: Postman import/export. Data dumps (`archive.json`
   index + `collection/` + `environment/`) import with environments,
   collection variables as an environment, inherited auth (inherit / noauth,
