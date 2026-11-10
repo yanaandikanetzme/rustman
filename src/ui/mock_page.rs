@@ -88,12 +88,17 @@ fn pill<'a>(label: &str, tone: Tone) -> Element<'a, Message> {
             text(label.to_owned())
                 .size(TEXT_SM)
                 .font(UI_FONT_MEDIUM)
+                .line_height(1.0)
                 .color(tone.color())
         ]
         .spacing(6)
         .align_y(Alignment::Center),
     )
-    .padding([2, 9])
+    // A fixed height with the text box as tall as its glyphs centres the
+    // label; the default line height left more room under it than above.
+    .height(22)
+    .center_y(22)
+    .padding([0, 9])
     .style(move |_| container::Style {
         background: Some(Background::Color(tone.tint(0.16))),
         border: Border {
@@ -164,8 +169,16 @@ fn status_code<'a>(status: u16) -> Element<'a, Message> {
         400..=499 => Tone::Warning,
         _ => Tone::Danger,
     };
-    container(text(status.to_string()).size(TEXT_XS).font(MONO).color(tone.color()))
-        .padding([1, 7])
+    container(
+        text(status.to_string())
+            .size(TEXT_XS)
+            .font(MONO)
+            .line_height(1.0)
+            .color(tone.color()),
+    )
+    .height(18)
+    .center_y(18)
+    .padding([0, 7])
         .style(move |_| container::Style {
             background: Some(Background::Color(tone.tint(0.16))),
             border: Border {
