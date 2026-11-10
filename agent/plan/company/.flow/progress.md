@@ -48,23 +48,48 @@ unverified. `—` means unclaimed; status is not a claim that code is absent.
 
 ## Active task details
 
-- [ ] Planned (user request 2026-11-10): Mock servers. A new sidebar
-  section/tab placed right after Environments, where the user creates and
-  manages mock servers (Postman-style): pick a collection, serve its saved
-  examples on a local port, list running mocks with their URL, start/stop
-  and delete. Keep the create action visible (`+` on the section header,
-  empty state with a Create mock server button). Open points before
-  building: which examples answer a request (method + path match, then
-  `x-mock-response-name` / first example), port choice and conflicts, and
-  whether mocks auto-start on launch. Unclaimed; no code yet.
-  Mockup (local, 2026-11-10): `../mockup/png/15`–`18-rustman-mock-servers-*`
-  (detail + create, dark/light; source `../mockup/pages/rustman-mock-servers.html`).
-  MOCK SERVERS is a sidebar section under ENVIRONMENTS with a visible `+`
-  (not a rail icon); rows show status dot, name, `:port · collection`. A mock
-  opens as a tab: mock URL + Copy/New request, facts (collection,
-  environment, delay, calls), Call log / Routes / Settings. Create tab:
-  name, collection, port (free check), environment, save `{{mock_url}}`,
-  delay, start on launch; right side previews the routes it will answer.
+- [X] Claude, 2026-11-10, `fix/overview-mocking`: Mock servers (user
+  request). Mockup (local): `../mockup/png/15`–`18-rustman-mock-servers-*`,
+  source `../mockup/pages/rustman-mock-servers.html`; placement approved by
+  the user: a MOCK SERVERS sidebar section under ENVIRONMENTS (not a rail
+  icon) with a visible `+` and an empty state "Create mock server".
+  - Engine `0dfcab9` (`services/mock.rs`, `domain/mock.rs`,
+    `storage/mocks.rs`, table `mock_servers` as JSON rows): every saved
+    example becomes a response for its own request snapshot's method +
+    path (`{{base_url}}`, scheme/host, query dropped; `:id`, `{id}`,
+    `{{x}}` segments are parameters; literal segments win). Several
+    examples: `x-mock-response-name`, then `x-mock-response-code`, then
+    the first 2xx, then the first. Misses answer JSON with a hint: 404 no
+    route / request without example, 405 path exists with another method.
+    Plain tokio HTTP/1.1 on 127.0.0.1 (one request per connection, CORS
+    `*` + preflight, HEAD, body read up to 16 MB, head cap 64 KB, optional
+    fixed delay). tokio gained `net` + `io-util` only; no new crates.
+  - Wiring `cc8785e`: each live mock is an iced subscription keyed by id +
+    port + delay + start generation (like WebSocket tabs); stopping drops
+    it and closes the port; bind retries ~1 s on a restart race. Routes
+    are a shared `Arc<RwLock>`, refreshed after example/save/delete
+    messages, so saved examples answer without a restart. Call log keeps
+    500 per mock (newest first) + calls/unmatched counters. Auto-start on
+    launch per mock. The mock page closes on tab switches, request /
+    environment / history opens and when docs open.
+  - UI `f6bf52e`: sidebar rows (status dot, name, `:port · collection` or
+    the start error; Start/Stop on hover), detail page (status pill,
+    Edit / Delete with confirm banner / Start-Stop / Close, mock URL with
+    Copy + New request, facts, Call log with All/Matched/Unmatched + path
+    filter + Clear, Routes table), create/edit form (name, collection,
+    port with a free/taken check on input, environment, save
+    `{{mock_url}}` into it, fixed delay, start on launch; live preview of
+    the routes). Footer shows "N mocks running".
+  - Gates: 463 passed / 3 ignored (8 new mock tests incl. a real TCP
+    round trip); `--no-default-features` builds. Native check on the
+    example workspace (`scripts/ui.sh -x`): create → running, `{{mock_url}}`
+    saved, `/users` and `/nope` logged as 404 with reasons, restart keeps
+    the mock (stopped), Routes and Edit render.
+  - Gaps: no Settings sub-tab (Edit covers it); one request per connection
+    (no keep-alive); binary example bodies are not served as bytes; the
+    stop control is a drawn square (Lucide `square` codepoint unverified
+    in the bundled font); a success answer from a real saved example was
+    checked by tests, not by hand in the app.
 
 - [X] Claude, 2026-11-10, `fix/overview-mocking`: clicking a tab (including
   the active one) now closes the collection Overview and the environment
