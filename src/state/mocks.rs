@@ -77,6 +77,8 @@ pub struct MockForm {
     pub collection_id: Option<String>,
     pub environment_id: Option<String>,
     pub port: String,
+    /// Port check, done when the port changes (never per frame).
+    pub port_note: Option<PortNote>,
     pub delay_on: bool,
     pub delay: String,
     pub auto_start: bool,
@@ -85,7 +87,40 @@ pub struct MockForm {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum PortNote {
+    Free,
+    /// Taken by another mock (its name) or another program (`None`).
+    Taken(Option<String>),
+    Invalid,
+}
+
 impl MocksState {
+    /// Checks `port` for the form; `editing` is the mock being edited.
+    pub fn port_note(&self, port: &str, editing: Option<&str>) -> PortNote {
+        let Ok(port) = port.parse::<u16>() else {
+            return PortNote::Invalid;
+        };
+        if port < 1024 {
+            return PortNote::Invalid;
+        }
+        if let Some(other) = self
+            .servers
+            .iter()
+            .find(|m| m.port == port && Some(m.id.as_str()) != editing)
+        {
+            return PortNote::Taken(Some(other.name.clone()));
+        }
+        let own_live = editing
+            .and_then(|id| self.get(id))
+            .is_some_and(|m| m.port == port && self.is_live(&m.id));
+        if own_live || crate::services::mock::port_free(port) {
+            PortNote::Free
+        } else {
+            PortNote::Taken(None)
+        }
+    }
+
     pub fn get(&self, id: &str) -> Option<&MockServer> {
         self.servers.iter().find(|m| m.id == id)
     }

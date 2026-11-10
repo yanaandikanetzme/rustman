@@ -50,6 +50,7 @@ pub(super) fn handle(state: &mut AppState, msg: MockMsg) -> Task<Message> {
                         },
                         auto_start: mock.auto_start,
                         save_var: false,
+                        port_note: None,
                         error: None,
                     }),
                 );
@@ -85,9 +86,12 @@ pub(super) fn handle(state: &mut AppState, msg: MockMsg) -> Task<Message> {
             f.save_var = f.save_var && id.is_some();
             f.environment_id = id;
         }),
-        MockMsg::FormPort(v) => form(state, |f| {
-            f.port = v.chars().filter(char::is_ascii_digit).take(5).collect()
-        }),
+        MockMsg::FormPort(v) => {
+            form(state, |f| {
+                f.port = v.chars().filter(char::is_ascii_digit).take(5).collect()
+            });
+            refresh_port_note(state);
+        }
         MockMsg::FormDelayToggled(on) => form(state, |f| f.delay_on = on),
         MockMsg::FormDelay(v) => form(state, |f| {
             f.delay = v.chars().filter(char::is_ascii_digit).take(6).collect()
@@ -171,6 +175,19 @@ fn open_page(state: &mut AppState, page: MockPage) {
     state.close_environment_workspace();
     state.mocks.delete_asked = None;
     state.mocks.page = Some(page);
+    refresh_port_note(state);
+}
+
+fn refresh_port_note(state: &mut AppState) {
+    let Some(MockPage::Form(form)) = &state.mocks.page else {
+        return;
+    };
+    let note = state
+        .mocks
+        .port_note(&form.port, form.editing.as_deref());
+    if let Some(MockPage::Form(form)) = &mut state.mocks.page {
+        form.port_note = Some(note);
+    }
 }
 
 fn form(state: &mut AppState, f: impl FnOnce(&mut MockForm)) {

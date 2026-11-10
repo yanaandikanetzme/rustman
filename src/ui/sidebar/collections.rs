@@ -148,7 +148,12 @@ fn panel(state: &AppState) -> Element<'_, Message> {
         bottom: 12.0,
         left: TREE_PAD_X,
     });
-    let environments = container(super::environment_list::view(state)).padding(Padding {
+    // Mock Servers sits right under Environments, in the same bottom block.
+    let environments = container(column![
+        super::environment_list::view(state),
+        super::mock_list::view(state)
+    ])
+    .padding(Padding {
         left: TREE_PAD_X,
         right: TREE_PAD_X,
         bottom: 12.0,
@@ -186,6 +191,15 @@ pub(super) fn section_header(
     collapsed: bool,
     message: SidebarMsg,
 ) -> Element<'static, Message> {
+    section_header_with(label, collapsed, Message::Sidebar(message))
+}
+
+/// `section_header` for a section whose toggle is not a sidebar message.
+pub(super) fn section_header_with(
+    label: &str,
+    collapsed: bool,
+    message: Message,
+) -> Element<'static, Message> {
     // A fixed-height button top-aligns its content; center the label in the
     // 24px hover band explicitly (mockup `.wf-heading`: align-items center).
     button(
@@ -208,7 +222,7 @@ pub(super) fn section_header(
         )
         .center_y(Length::Fill),
     )
-    .on_press(Message::Sidebar(message))
+    .on_press(message)
     .height(24)
     .width(Length::Fill)
     .style(|_, status| button::Style {

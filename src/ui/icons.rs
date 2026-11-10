@@ -222,6 +222,11 @@ pub fn play() -> Text<'static> {
 pub fn info() -> Text<'static> {
     glyph(INFO)
 }
+/// Lucide server, mock servers.
+pub fn server() -> Text<'static> {
+    glyph(SERVER)
+}
+const SERVER: char = '\u{e153}';
 const PLAY: char = '\u{e13c}';
 const INFO: char = '\u{e0f9}';
 
@@ -231,7 +236,11 @@ mod glyph_tests {
     fn new_glyphs_exist_in_the_icon_font() {
         let face = ttf_parser::Face::parse(include_bytes!("../../assets/fonts/lucide.ttf"), 0)
             .expect("lucide parses");
-        for (c, name) in [(super::PLAY, "play"), (super::INFO, "info")] {
+        for (c, name) in [
+            (super::PLAY, "play"),
+            (super::INFO, "info"),
+            (super::SERVER, "server"),
+        ] {
             let id = face.glyph_index(c).expect("glyph present");
             if let Some(found) = face.glyph_name(id) {
                 assert_eq!(found, name);
