@@ -279,18 +279,18 @@ fn detail<'a>(state: &'a AppState, m: &'a MockServer) -> Element<'a, Message> {
             )
             .width(115)
             .height(Length::Fill)
-            .padding([0, 12])
+            .padding([0, 14])
             .center_y(Length::Fill)
             .style(|_| container::Style {
                 background: Some(Background::Color(Palette::surface_high())),
                 ..Default::default()
             }),
             container(mono(url, Palette::text()))
-                .padding([0, 12])
+                .padding([0, 14])
                 .center_y(Length::Fill),
             Space::new().width(Length::Fill),
             container(text(saved_as.unwrap_or_default()).size(TEXT_SM).color(Palette::text_subtle()))
-                .padding([0, 12])
+                .padding([0, 14])
                 .center_y(Length::Fill),
             icon_label(icons::copy(), "Copy", mock(MockMsg::CopyUrl(m.id.clone()))),
             icon_label(icons::plus(), "New request", mock(MockMsg::NewRequest(m.id.clone()))),
@@ -455,7 +455,7 @@ fn call_log<'a>(
     .align_y(Alignment::Center);
 
     let needle = state.mocks.path_filter.trim().to_lowercase();
-    let mut table = DataTable::new([
+    let mut table = DataTable::spacious([
         ("Time", Length::Fixed(84.0)),
         ("Method", Length::Fixed(64.0)),
         ("Path", Length::FillPortion(3)),
@@ -516,7 +516,7 @@ fn call_log<'a>(
         } else {
             "No calls. Start the mock server, then send requests to its URL.".into()
         }))
-        .padding([16, 4])
+        .padding([16, 14])
         .into()
     } else {
         table.into()
@@ -527,10 +527,10 @@ fn call_log<'a>(
 fn routes_table<'a>(routes: Vec<Route>) -> Element<'a, Message> {
     if routes.is_empty() {
         return container(t::muted("The collection has no requests to mock."))
-            .padding([16, 4])
+            .padding([16, 14])
             .into();
     }
-    let mut table = DataTable::new([
+    let mut table = DataTable::spacious([
         ("Method", Length::Fixed(64.0)),
         ("Path", Length::FillPortion(3)),
         ("Request", Length::FillPortion(2)),
