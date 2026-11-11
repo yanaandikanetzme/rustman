@@ -7,5 +7,6 @@ pub mod environment;
 pub mod example;
 pub mod group;
 pub mod history;
+pub mod mock;
 pub mod request;
 pub mod response;

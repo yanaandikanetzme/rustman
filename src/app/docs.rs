@@ -223,6 +223,7 @@ pub(crate) fn open(state: &mut AppState, collection_id: &str) {
     if state.examples.editor.as_ref().is_some_and(|e| e.dirty) {
         return;
     }
+    state.mocks.page = None;
     let lang = state
         .collection_docs
         .as_ref()
@@ -306,6 +307,27 @@ mod tests {
         let docs = state.collection_docs.as_ref().unwrap();
         assert!(docs.full, "a language change stays in the documentation");
         assert!(docs.sections[1].requests[0].snippet.contains("requests"));
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn clicking_the_active_tab_leaves_the_overview() {
+        let dir = std::env::temp_dir().join(format!("rustman-docs-{}", uuid::Uuid::new_v4()));
+        let (mut state, _) = crate::app::boot::init_at(dir.clone());
+        state.collections.push(Collection {
+            id: "c".into(),
+            name: "Payments".into(),
+            created_at: 0,
+        });
+        open(&mut state, "c");
+        assert!(state.collection_docs.is_some());
+        let active = state.tabs.active;
+        let _ = crate::app::update::update(
+            &mut state,
+            crate::message::Message::Request(crate::message::RequestMsg::TabDragStart(active)),
+        );
+        assert!(state.collection_docs.is_none(), "the tab's request shows again");
         drop(state);
         let _ = std::fs::remove_dir_all(dir);
     }

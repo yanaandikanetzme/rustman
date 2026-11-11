@@ -268,7 +268,7 @@ pub fn view(tab: &RequestTabState, spinner_frame: u32, format_open: bool) -> Ele
     .width(Length::Fill);
 
     let body: Element<Message> = if preview_on && tab.html_fallback_text.is_some() {
-        html_preview_view(&tab.html_blocks, !resp.body_stored)
+        html_preview_view(&tab.html_views, !resp.body_stored)
     } else if let (true, Some(json)) = (preview_on, tab.parsed_json.as_ref()) {
         json_preview_view(json, &tab.json_open)
     } else if tab.viewer_processing {
@@ -344,15 +344,90 @@ fn dump_color(kind: crate::services::html_preview::DumpKind) -> Color {
     }
 }
 
+/// Colour runs of a dump block, compared by identity: they are rebuilt only
+/// with a new response, so a pointer check is enough for the highlighter.
+#[derive(Clone)]
+struct DumpRuns(std::sync::Arc<Vec<crate::services::html_preview::LineRuns>>);
+
+impl PartialEq for DumpRuns {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// Feeds the precomputed dump colours to the preview's read-only editor.
+struct DumpHighlighter {
+    runs: DumpRuns,
+    line: usize,
+}
+
+impl iced::advanced::text::Highlighter for DumpHighlighter {
+    type Settings = DumpRuns;
+    type Highlight = crate::services::html_preview::DumpKind;
+    type Iterator<'a> =
+        std::vec::IntoIter<(std::ops::Range<usize>, crate::services::html_preview::DumpKind)>;
+
+    fn new(settings: &Self::Settings) -> Self {
+        Self {
+            runs: settings.clone(),
+            line: 0,
+        }
+    }
+
+    fn update(&mut self, new_settings: &Self::Settings) {
+        self.runs = new_settings.clone();
+        self.line = 0;
+    }
+
+    fn change_line(&mut self, line: usize) {
+        self.line = self.line.min(line);
+    }
+
+    fn highlight_line(&mut self, line: &str) -> Self::Iterator<'_> {
+        let runs: crate::services::html_preview::LineRuns = self
+            .runs
+            .0
+            .get(self.line)
+            .map(|runs| {
+                runs.iter()
+                    .filter(|(r, _)| r.end <= line.len())
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.line += 1;
+        runs.into_iter()
+    }
+
+    fn current_line(&self) -> usize {
+        self.line
+    }
+}
+
+fn dump_format(
+    kind: &crate::services::html_preview::DumpKind,
+    _theme: &iced::Theme,
+) -> iced::advanced::text::highlighter::Format<iced::Font> {
+    use crate::services::html_preview::DumpKind;
+    iced::advanced::text::highlighter::Format {
+        color: Some(dump_color(*kind)),
+        font: matches!(kind, DumpKind::Str | DumpKind::Const).then_some(iced::Font {
+            weight: iced::font::Weight::Bold,
+            ..MONO
+        }),
+    }
+}
+
 /// HTML Preview: VarDumper blocks keep their colours and layout, other
-/// content shows as readable text. Blocks are parsed once per response.
-/// The real page stays one Open in browser / Save away (full body only).
+/// content shows as readable text. Each block is a read-only editor, so its
+/// text can be selected and copied (Ctrl+C). Blocks are parsed once per
+/// response. The real page stays one Open in browser / Save away (full
+/// body only).
 fn html_preview_view(
-    blocks: &[crate::services::html_preview::Block],
+    views: &[crate::state::tabs::HtmlBlockView],
     full_body: bool,
 ) -> Element<'_, Message> {
-    use crate::services::html_preview::{Block, DumpKind};
-    use iced::widget::{rich_text, span};
+    use iced::widget::text_editor;
 
     let (open_action, save_action): (Element<Message>, Element<Message>) = if full_body {
         (open_in_browser_button(), save_text_button())
@@ -361,48 +436,45 @@ fn html_preview_view(
     };
 
     let mut content = column![].spacing(8).padding(iced::padding::right(10));
-    for block in blocks {
-        content = content.push(match block {
-            Block::Dump(spans) => {
-                let spans: Vec<_> = spans
-                    .iter()
-                    .map(|(t, kind)| {
-                        let s = span(t.as_str()).color(dump_color(*kind));
-                        if matches!(kind, DumpKind::Str | DumpKind::Const) {
-                            s.font(iced::Font {
-                                weight: iced::font::Weight::Bold,
-                                ..MONO
-                            })
-                        } else {
-                            s
-                        }
-                    })
-                    .collect();
-                container(
-                    rich_text::<(), Message, iced::Theme, iced::Renderer>(spans)
-                        .size(12)
-                        .font(MONO)
-                        .line_height(iced::Pixels(18.0)),
-                )
-                .padding([6, 10])
-                .width(Length::Fill)
-                .style(|_| container::Style {
-                    background: Some(Background::Color(DUMP_BG)),
-                    border: Border {
-                        radius: 4.0.into(),
-                        ..Default::default()
-                    },
+    for (i, view) in views.iter().enumerate() {
+        let dump = view.dump;
+        let editor = text_editor(&view.content)
+            .on_action(move |a| Message::Response(ResponseMsg::HtmlPreviewAction(i, a)))
+            .size(if dump { 12.0 } else { TEXT_SM as f32 })
+            .font(if dump { MONO } else { crate::ui::theme::UI_FONT })
+            .line_height(if dump {
+                iced::widget::text::LineHeight::Absolute(iced::Pixels(18.0))
+            } else {
+                iced::widget::text::LineHeight::default()
+            })
+            .padding(if dump {
+                iced::Padding::from([6, 10])
+            } else {
+                iced::Padding::ZERO
+            })
+            .style(move |_, _| text_editor::Style {
+                background: Background::Color(if dump {
+                    DUMP_BG
+                } else {
+                    Color::TRANSPARENT
+                }),
+                border: Border {
+                    radius: 4.0.into(),
                     ..Default::default()
-                })
-                .into()
-            }
-            Block::Text(t) => Element::from(
-                text(t.as_str())
-                    .size(TEXT_SM)
-                    .font(crate::ui::theme::UI_FONT)
-                    .color(Palette::text()),
-            ),
-        });
+                },
+                placeholder: Palette::text_subtle(),
+                value: if dump {
+                    dump_color(crate::services::html_preview::DumpKind::Default)
+                } else {
+                    Palette::text()
+                },
+                selection: Color {
+                    a: 0.35,
+                    ..Palette::accent()
+                },
+            })
+            .highlight_with::<DumpHighlighter>(DumpRuns(view.runs.clone()), dump_format);
+        content = content.push(crate::ui::widgets::wheel_passthrough::wheel_passthrough(editor));
     }
 
     container(

@@ -5,6 +5,7 @@ pub mod environment_workspace;
 pub mod examples;
 pub mod icons;
 pub mod layout;
+pub mod mock_page;
 pub mod notification;
 pub mod request;
 pub mod response;
