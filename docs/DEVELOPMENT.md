@@ -8,7 +8,7 @@ I try to be honest here. Where something is UI only, stubbed, or half wired, I s
 
 Use the current stable Rust toolchain through rustup. Rustman and its editor fork use edition 2024, and the locked dependencies may require a compiler newer than the edition minimum; no separate minimum Rust version is validated. Two dependencies come from `rust-man-org` repos on GitHub (the engine and the editor fork) and are fetched by cargo automatically. You also need a C toolchain and CMake, because git2 builds vendored libgit2 and OpenSSL and rusqlite bundles SQLite, all from source. On Linux add the X, xkb, and dbus dev packages (`libxkbcommon-dev libxi-dev libx11-dev libxcb1-dev libxcb-xkb-dev libdbus-1-dev pkg-config cmake build-essential`). Build with `cargo build --release` and the binary lands at `target/release/rustman`. Day to day I just use `cargo run`.
 
-For distro packaging, build with `--no-default-features`: that compiles out the in-app updater (boot check, Settings → Updates card, update banner, and the binary-swapping code) so the package manager is the only thing that delivers updates.
+The app does not check for or install application updates. Distribution packages can be updated by their package manager.
 
 ## Architecture
 
@@ -20,7 +20,7 @@ Everything under `src/` splits into six concerns.
 |--------|------------------|
 | `domain/` | Pure data and logic, no I/O. `SavedRequest` and `Collection` (`collection.rs`), `KeyValue`, `FormField`, and the auth and body enums (`request.rs`), `HttpResponse`, `TestResult`, `ConsoleEntry` (`response.rs`), `AppEnvironment` and `substitute()` (`environment.rs`). |
 | `state/` | Mutable runtime state. `RequestTabState` and `TabSnapshot` (`tabs.rs`), `AppSession` (`session.rs`), sidebar state. This is the in memory model the UI draws and the reducers change. |
-| `services/` | All the I/O and side effects. `http.rs` (reqwest), `storage.rs` (SQLite), `vcs.rs` (git2 and your system git), `websocket.rs` (tokio-tungstenite), `update.rs` (self update, behind the `self-update` feature), `curl/` and `import/` (parsers and generators), `cache.rs` and `response_store.rs`. |
+| `services/` | All the I/O and side effects. `http.rs` (reqwest), `storage.rs` (SQLite), `vcs.rs` (git2 and your system git), `websocket.rs` (tokio-tungstenite), `curl/` and `import/` (parsers and generators), `cache.rs` and `response_store.rs`. |
 | `app/` | The core. `mod.rs` holds `AppState` and the `update()` entry, `boot.rs` builds the first state from SQLite, `session.rs` persists the session, `request_ops.rs` assembles and sends requests, and `update/` holds the per message reducers. |
 | `ui/` | View code only. It reads `AppState` and emits messages. It never mutates state. |
 | `jobs/` | Background task bookkeeping. `JobManager` (`manager.rs`) is a per tab generation and cancellation slot table keyed by `JobKind`. |
@@ -153,7 +153,6 @@ Ctrl+Enter or Cmd+Enter sends the current request without moving your hands to t
 | Git identity | works | Resolved from the repo's git config. Settings panel lets you set it directly. No hardcoded fallback. |
 | Pre-request and test scripts | works | Both slots run on [rustman-engine](https://github.com/rust-man-org/rustman-engine), a custom language rather than JS. `app/scripting.rs` builds a `HostInput`, calls `rustman_engine::run`, and applies the returned effects (`SetHeader`, `SetBody`, `SetEnv`, `Test`, `Log`), so the Tests tab and its console fill in. A Global Scripts pair in Settings runs first and the request's own script can override it. |
 | Scripting built-ins | works | `env`, `set_env`, `header`, `headers`, `set_header`, `cookie`, `body`, `set_body`, `url`, `test`, `print`, `contains`, base64, `jwt_decode`, `json_parse`, `json_stringify`, and AES-256-GCM. No loops, no user-defined functions, no regex. |
-| Self update | works | Checks GitHub releases, downloads and extracts, swaps the binary with `self_replace`, then offers a restart. Pure Rust. |
 | Content-Type suggestions | works | When the header key is `Content-Type`, a picklist of 29 common values shows up. |
 | Clone a request | works | The copy icon in a sidebar request row saves a duplicate into the same collection under `<name> copy` (numbered when that name is taken), opens it as the active tab, and lands in the rename field so the name can be changed straight away. `SavedRequest::duplicate_in` copies every field but the id. |
 

@@ -75,10 +75,6 @@ pub struct AppState {
     pub palette_anim: Option<(std::time::Instant, bool)>,
     /// Latest animation frame time (drives the popup easing).
     pub palette_now: std::time::Instant,
-    /// Footer taps toward the creator easter egg (resets on unlock).
-    pub creator_taps: u8,
-    /// Triple-tapped footer: show the hidden creator card.
-    pub creator_unlocked: bool,
     /// LRU cache for parsed response JSON — keyed by body hash, 20-slot cap.
     pub parsed_cache: crate::services::cache::ParsedBodyCache,
     pub export_dialog_collection: Option<String>,
@@ -147,15 +143,6 @@ pub struct AppState {
     pub show_auto_headers: bool,
     /// UI zoom level (0.7 – 2.0). Applied via iced scale_factor.
     pub ui_scale: f64,
-    /// Auto-update progress for the banner + settings panel. Absent when the
-    /// `self-update` feature is compiled out (package-manager builds).
-    #[cfg(feature = "self-update")]
-    pub update: UpdateState,
-    /// Check GitHub releases automatically on launch (issue #57). Off means
-    /// zero boot-time network: the manual Check button still works. Absent
-    /// without the `self-update` feature.
-    #[cfg(feature = "self-update")]
-    pub auto_check_updates: bool,
     /// Default request timeout in ms, applied to every request (used to be
     /// configurable per-tab; moved to a single global setting).
     pub default_timeout_ms: u64,
@@ -189,22 +176,6 @@ pub struct AppState {
     pub secrets: crate::state::secrets::SecretsState,
     #[allow(dead_code)] // filled by 08
     pub review: crate::state::review::ReviewState,
-}
-
-/// State machine for the self-update flow. Only compiled with the
-/// `self-update` feature.
-#[cfg(feature = "self-update")]
-#[derive(Debug, Clone, Default)]
-pub enum UpdateState {
-    #[default]
-    Idle,
-    Checking,
-    Available(crate::services::update::UpdateInfo),
-    Installing,
-    /// Installed `version`; awaiting a restart to take effect.
-    Ready(String),
-    UpToDate,
-    Failed(String),
 }
 
 impl AppState {

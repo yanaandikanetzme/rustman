@@ -5,17 +5,14 @@ use iced::{
 
 const LOGO_SVG: &[u8] = include_bytes!("../../../public/rustman-logo.svg");
 
-#[cfg(feature = "self-update")]
-use crate::{app::UpdateState, message::UpdateMsg};
 use crate::{
-    message::{AppMsg, Message, SettingsMsg},
+    message::{Message, SettingsMsg},
     ui::theme::{Palette, TEXT_SM, THEMES, ThemeSpec},
-    ui::tree_label::{tree_label, tree_label_styled},
+    ui::tree_label::tree_label,
 };
 
 pub fn view(state: &crate::app::AppState) -> Element<'_, Message> {
     let header = build_header();
-    let profile = card(build_about(state.sidebar_width));
     let git_identity = card(build_git_identity(
         &state.git_user_name,
         &state.git_user_email,
@@ -29,32 +26,18 @@ pub fn view(state: &crate::app::AppState) -> Element<'_, Message> {
         state.global_test_editor.text().len(),
         state.sidebar_width,
     ));
-    #[cfg(feature = "self-update")]
-    let updates = card(build_updates(
-        &state.update,
-        state.sidebar_width,
-        state.auto_check_updates,
-    ));
     let shortcuts = card(build_shortcuts(state.sidebar_width));
-    let footer = build_footer(state.creator_unlocked, state.sidebar_width);
 
-    let mut sections = column![
+    let sections = column![
         header,
-        profile,
         git_identity,
         appearance,
         layout,
         request_defaults,
         tls,
         global_scripts,
+        shortcuts,
     ];
-    // The Updates card only exists in builds with the in-app updater; in a
-    // package-manager build (`--no-default-features`) it is omitted entirely.
-    #[cfg(feature = "self-update")]
-    {
-        sections = sections.push(updates);
-    }
-    sections = sections.push(shortcuts).push(footer);
 
     scrollable(sections.spacing(6).padding(iced::Padding {
         top: 0.0,
@@ -266,31 +249,6 @@ fn build_header() -> Element<'static, Message> {
     .into()
 }
 
-/// Compact project card: links to the org repo + issue tracker. Replaces
-/// the old personal-profile card — no avatar download, no PII in state.
-fn build_about(content_width: f32) -> Element<'static, Message> {
-    let accent = Palette::accent();
-    column![
-        section_label("RUSTMAN"),
-        full_link_row(
-            "GitHub",
-            "rust-man-org/rustman".to_owned(),
-            "https://github.com/rust-man-org/rustman".to_owned(),
-            accent,
-            content_width,
-        ),
-        full_link_row(
-            "Issues",
-            "Report a bug".to_owned(),
-            "https://github.com/rust-man-org/rustman/issues".to_owned(),
-            accent,
-            content_width,
-        ),
-    ]
-    .spacing(6)
-    .into()
-}
-
 fn build_appearance(theme_idx: usize) -> Element<'static, Message> {
     let mut cards = column![].spacing(4);
     for (i, spec) in THEMES.iter().enumerate() {
@@ -441,73 +399,6 @@ fn build_layout(horizontal: bool, content_width: f32) -> Element<'static, Messag
     col.into()
 }
 
-#[cfg(feature = "self-update")]
-fn build_updates(
-    update: &UpdateState,
-    content_width: f32,
-    auto_check: bool,
-) -> Element<'static, Message> {
-    let (status, status_color) = match update {
-        UpdateState::Idle if !auto_check => (
-            "Automatic checks off — use the button below".to_owned(),
-            Palette::text_subtle(),
-        ),
-        UpdateState::Idle => (
-            "Checked automatically on launch".to_owned(),
-            Palette::text_subtle(),
-        ),
-        UpdateState::Checking => ("Checking…".to_owned(), Palette::text_muted()),
-        UpdateState::Available(info) => (format!("v{} available", info.version), Palette::accent()),
-        UpdateState::Installing => ("Downloading update…".to_owned(), Palette::text_muted()),
-        UpdateState::Ready(v) => (
-            format!("v{v} installed — restart to apply"),
-            Palette::SUCCESS,
-        ),
-        UpdateState::UpToDate => ("You're on the latest version".to_owned(), Palette::SUCCESS),
-        UpdateState::Failed(e) => (format!("Check failed: {e}"), Palette::ERROR),
-    };
-    let busy = matches!(update, UpdateState::Checking | UpdateState::Installing);
-
-    let mut check = button(text("Check for updates").size(11).color(Palette::text()))
-        .style(|_t, status| {
-            let hov = matches!(status, iced::widget::button::Status::Hovered);
-            iced::widget::button::Style {
-                background: Some(Background::Color(if hov {
-                    Palette::surface_raised()
-                } else {
-                    Palette::surface_high()
-                })),
-                border: Border {
-                    color: Palette::border(),
-                    width: 1.0,
-                    radius: 6.0.into(),
-                },
-                text_color: Palette::text(),
-                ..Default::default()
-            }
-        })
-        .padding([6, 10]);
-    if !busy {
-        check = check.on_press(Message::Update(UpdateMsg::Check));
-    }
-
-    // Update errors carry network/HTTP details and can be long — truncate
-    // with a hover tooltip instead of wrapping the card taller.
-    column![
-        section_label("UPDATES"),
-        iced::widget::checkbox(auto_check)
-            .label("Check for updates on launch")
-            .on_toggle(move |_| Message::Settings(SettingsMsg::AutoCheckUpdatesToggled))
-            .size(15)
-            .text_size(11)
-            .style(crate::ui::styles::checkbox),
-        tree_label_styled(status, 11.0, content_width - 36.0, None, status_color),
-        check,
-    ]
-    .spacing(6)
-    .into()
-}
-
 fn build_shortcuts(content_width: f32) -> Element<'static, Message> {
     let cmd = if cfg!(target_os = "macos") {
         "⌘"
@@ -583,78 +474,6 @@ fn build_shortcuts(content_width: f32) -> Element<'static, Message> {
     grid.into()
 }
 
-fn build_footer(creator_unlocked: bool, content_width: f32) -> Element<'static, Message> {
-    let accent = Palette::accent();
-    // The footer text is a button, but styled to look like plain text: three
-    // taps unlock the hidden creator card (see SettingsMsg::CreatorTapped).
-    let mut col = column![
-        button(
-            text("Rustman · purely in Rust + iced")
-                .size(9)
-                .color(Palette::text_subtle()),
-        )
-        .on_press(Message::Settings(SettingsMsg::CreatorTapped))
-        .style(|_t, _s| iced::widget::button::Style {
-            background: None,
-            ..Default::default()
-        })
-        .padding(0),
-    ]
-    .spacing(6);
-    if creator_unlocked {
-        col = col.push(
-            container(
-                column![
-                    text("Built by Animesh — open to work & freelance gigs.")
-                        .size(10)
-                        .color(Palette::text()),
-                    full_link_row(
-                        "GitHub",
-                        "animeshchaudhri".to_owned(),
-                        "https://github.com/animeshchaudhri".to_owned(),
-                        accent,
-                        content_width,
-                    ),
-                    full_link_row(
-                        "Email",
-                        "ac04@duck.com".to_owned(),
-                        "mailto:ac04@duck.com".to_owned(),
-                        accent,
-                        content_width,
-                    ),
-                    full_link_row(
-                        "Site",
-                        "animesh.us".to_owned(),
-                        "https://animesh.us".to_owned(),
-                        accent,
-                        content_width,
-                    ),
-                ]
-                .spacing(4),
-            )
-            .style(|_| iced::widget::container::Style {
-                background: Some(Background::Color(Palette::surface_high())),
-                border: Border {
-                    color: Palette::border_subtle(),
-                    width: 1.0,
-                    radius: 8.0.into(),
-                },
-                ..Default::default()
-            })
-            .padding(10)
-            .width(Length::Fill),
-        );
-    }
-    container(col)
-        .padding(iced::Padding {
-            top: 4.0,
-            right: 12.0,
-            bottom: 8.0,
-            left: 12.0,
-        })
-        .into()
-}
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn card(content: impl Into<Element<'static, Message>>) -> Element<'static, Message> {
@@ -699,72 +518,4 @@ fn section_label(label: &'static str) -> Element<'static, Message> {
 
 fn field_label(label: &'static str) -> Element<'static, Message> {
     text(label).size(10).color(Palette::text_subtle()).into()
-}
-
-/// A full-width row: label chip + clickable link text that truncates with a
-/// hover tooltip instead of overflowing. The button is Fill so the label
-/// inside clips at the row edge rather than sizing the row to its content.
-fn full_link_row(
-    label: &'static str,
-    display: String,
-    url: String,
-    accent: Color,
-    content_width: f32,
-) -> Element<'static, Message> {
-    let accent_dim = Color {
-        r: accent.r * 0.62,
-        g: accent.g * 0.62,
-        b: accent.b * 0.63,
-        a: 1.0,
-    };
-    let chip_bg = Palette::surface_high();
-    let chip_bd = Palette::border_subtle();
-    row![
-        container(
-            text(label)
-                .size(9)
-                .color(Palette::text_subtle())
-                .font(crate::ui::theme::MONO)
-        )
-        .style(move |_| iced::widget::container::Style {
-            background: Some(Background::Color(chip_bg)),
-            border: Border {
-                color: chip_bd,
-                width: 1.0,
-                radius: 3.0.into()
-            },
-            ..Default::default()
-        })
-        .padding([2, 6]),
-        button(tree_label_styled(
-            display,
-            11.0,
-            content_width - 100.0,
-            None,
-            accent
-        ))
-        .on_press(Message::App(AppMsg::OpenUrl(url)))
-        .style(move |_t, s| {
-            let hov = matches!(s, iced::widget::button::Status::Hovered);
-            iced::widget::button::Style {
-                background: if hov {
-                    Some(Background::Color(accent_dim))
-                } else {
-                    None
-                },
-                border: Border {
-                    color: Color::TRANSPARENT,
-                    width: 0.0,
-                    radius: 3.0.into(),
-                },
-                text_color: accent,
-                ..Default::default()
-            }
-        })
-        .padding([1, 4])
-        .width(Length::Fill),
-    ]
-    .spacing(8)
-    .align_y(iced::Alignment::Center)
-    .into()
 }

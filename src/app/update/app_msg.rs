@@ -354,9 +354,6 @@ pub(super) fn handle(state: &mut AppState, msg: AppMsg) -> Task<Message> {
             persist_session(state);
             return iced::window::close(id);
         }
-        AppMsg::OpenUrl(url) => {
-            let _ = open::that(url);
-        }
         AppMsg::AutoSaveSession => {
             // Unconditional: this used to only run when a tab was dirty,
             // which meant settings-only changes (global scripts, default

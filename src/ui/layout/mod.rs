@@ -65,12 +65,6 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
         .push(iced::widget::rule::horizontal(1).style(crate::ui::styles::divider))
         .push(status_bar::status_bar(state))
         .into();
-    #[cfg(feature = "self-update")]
-    let root: Element<Message> = match crate::ui::update_banner::view(state) {
-        Some(banner) => column![banner, main].into(),
-        None => main.into(),
-    };
-    #[cfg(not(feature = "self-update"))]
     let root: Element<Message> = main;
 
     let root: Element<Message> = if let Some(toast) = &state.notification {

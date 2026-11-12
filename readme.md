@@ -17,11 +17,8 @@ Rustman is free and open source and it is going to stay that way.
 - No telemetry, no analytics, nothing phones home.
 - Your collections, history, and environments live on your machine and nowhere else.
 
-The app makes zero automatic network calls. The only update traffic that
-can ever happen is the GitHub releases check, which is off by default —
-turn it on in Settings → Updates ("Check for updates on launch"), or use
-the manual Check button any time. Everything else is strictly on-demand:
-your requests, plus anything you explicitly sync or download.
+The app does not check for or install application updates. Network activity
+includes your requests and anything you explicitly sync or download.
 
 This is not a startup and I am not trying to sell you anything. It is a tool I wanted for myself, so I built it and put it out for everyone.
 
@@ -66,7 +63,6 @@ This is not a startup and I am not trying to sell you anything. It is a tool I w
 - **Command palette.** Keyboard driven access to everything.
 - **Multiple request tabs.** Work on a few requests at once.
 - **Session persistence.** Your open tabs come back next launch.
-- **Self update.** A built in updater (self-replace) grabs and swaps in new releases.
 - **Global default timeout.** One Settings-panel value applied to every request, persisted across restarts.
 
 ## Endpoint examples
@@ -260,8 +256,7 @@ This test uses a fake Cargo command and fake app executables. It does not start 
 sh tests/ui-script.sh
 ```
 
-For package-manager builds without the updater, see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
-The launcher builds the normal app with the updater. Automatic update checks are off by default.
+For build requirements, see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 Release optimization can make a build slow, especially the first build.
 
 ## Tech stack
@@ -272,7 +267,6 @@ Release optimization can make a build slow, especially the first build.
 - **Storage.** rusqlite (bundled SQLite), the source of truth.
 - **Collection version control.** git2 (vendored libgit2 and OpenSSL) for local commits, plus your system git for remotes.
 - **Code editor and highlighting.** Rustman's fork of [iced-code-editor-rustman](https://github.com/rust-man-org/iced-code-editor-rustman) (upstream by LuDog71), pinned to a tag and backed by syntect.
-- **Self update.** self-replace.
 - **Scripting.** [rustman-engine](https://github.com/rust-man-org/rustman-engine), a small custom scripting language (own crate, not JS/QuickJS) for pre-request/test scripts.
 
 ## Documentation
