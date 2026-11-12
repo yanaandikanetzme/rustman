@@ -13,38 +13,47 @@ use crate::ui::{components::atoms::text, theme::Palette};
 ///     .row(vec![a, b])`.
 /// Each row must have one cell per column.
 pub struct DataTable<'a, M> {
+    headers: Vec<&'static str>,
     widths: Vec<Length>,
-    rows: Column<'a, M>,
-    ruled: bool,
+    rows: Vec<Element<'a, M>>,
+    style: Style,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Style {
+    Compact,
+    Ruled,
+    Spacious,
 }
 
 impl<'a, M: 'a> DataTable<'a, M> {
     pub fn new(columns: impl IntoIterator<Item = (&'static str, Length)>) -> Self {
-        Self::build(columns, false)
+        Self::build(columns, Style::Compact)
     }
 
     /// Dense editor table with straight edges and hairline cell dividers.
     pub fn ruled(columns: impl IntoIterator<Item = (&'static str, Length)>) -> Self {
-        Self::build(columns, true)
+        Self::build(columns, Style::Ruled)
     }
 
-    fn build(columns: impl IntoIterator<Item = (&'static str, Length)>, ruled: bool) -> Self {
+    /// Page table: roomier rows split by hairlines, padded like a card.
+    pub fn spacious(columns: impl IntoIterator<Item = (&'static str, Length)>) -> Self {
+        Self::build(columns, Style::Spacious)
+    }
+
+    fn build(columns: impl IntoIterator<Item = (&'static str, Length)>, style: Style) -> Self {
         let (headers, widths): (Vec<_>, Vec<_>) = columns.into_iter().unzip();
-        let header = line(
-            headers.into_iter().map(|h| text::caption(h)).collect(),
-            &widths,
-            ruled,
-        );
         Self {
-            rows: column![header].spacing(0),
+            headers,
             widths,
-            ruled,
+            rows: Vec::new(),
+            style,
         }
     }
 
     pub fn row(mut self, cells: Vec<Element<'a, M>>) -> Self {
         debug_assert_eq!(cells.len(), self.widths.len(), "one cell per column");
-        self.rows = self.rows.push(line(cells, &self.widths, self.ruled));
+        self.rows.push(line(cells, &self.widths, self.style, false));
         self
     }
 
@@ -53,18 +62,29 @@ impl<'a, M: 'a> DataTable<'a, M> {
         M: Clone,
     {
         debug_assert_eq!(cells.len(), self.widths.len(), "one cell per column");
-        self.rows = self.rows.push(
-            iced::widget::mouse_area(line(cells, &self.widths, self.ruled))
+        self.rows.push(
+            iced::widget::mouse_area(line(cells, &self.widths, self.style, false))
                 .on_enter(enter)
-                .on_exit(exit),
+                .on_exit(exit)
+                .into(),
         );
         self
     }
 }
 
-fn line<'a, M: 'a>(cells: Vec<Element<'a, M>>, widths: &[Length], ruled: bool) -> Element<'a, M> {
+fn line<'a, M: 'a>(
+    cells: Vec<Element<'a, M>>,
+    widths: &[Length],
+    style: Style,
+    header: bool,
+) -> Element<'a, M> {
+    let ruled = style == Style::Ruled;
     let mut r: Row<'a, M> = Row::new()
-        .spacing(if ruled { 0 } else { 10 })
+        .spacing(match style {
+            Style::Compact => 10,
+            Style::Ruled => 0,
+            Style::Spacious => 12,
+        })
         .align_y(Alignment::Center);
     if ruled {
         r = r.height(28);
@@ -79,18 +99,36 @@ fn line<'a, M: 'a>(cells: Vec<Element<'a, M>>, widths: &[Length], ruled: bool) -
                 .width(*w),
         );
     }
-    if ruled {
-        return column![r, rule::horizontal(1).style(crate::ui::styles::divider)]
+    match style {
+        Style::Ruled => column![r, rule::horizontal(1).style(crate::ui::styles::divider)]
             .spacing(0)
-            .into();
+            .into(),
+        Style::Compact => container(r).padding([5, 10]).width(Length::Fill).into(),
+        Style::Spacious => container(r)
+            .padding(if header { [8, 14] } else { [10, 14] })
+            .width(Length::Fill)
+            .into(),
     }
-    container(r).padding([5, 10]).width(Length::Fill).into()
 }
 
 impl<'a, M: 'a> From<DataTable<'a, M>> for Element<'a, M> {
     fn from(t: DataTable<'a, M>) -> Self {
-        let ruled = t.ruled;
-        container(t.rows)
+        let style = t.style;
+        let header = line(
+            t.headers.into_iter().map(|h| text::caption(h)).collect(),
+            &t.widths,
+            style,
+            true,
+        );
+        let mut rows: Column<'a, M> = column![header].spacing(0);
+        for row in t.rows {
+            if style == Style::Spacious {
+                rows = rows.push(rule::horizontal(1).style(crate::ui::styles::divider));
+            }
+            rows = rows.push(row);
+        }
+        let ruled = style == Style::Ruled;
+        container(rows)
             .width(Length::Fill)
             .height(Length::Shrink)
             .style(move |_| container::Style {

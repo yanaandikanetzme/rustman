@@ -4,6 +4,7 @@ pub mod auth;
 pub mod draft;
 pub mod example;
 pub mod meta;
+pub mod mock;
 pub mod review;
 pub mod secrets;
 
@@ -38,6 +39,7 @@ pub enum Message {
     Secrets(secrets::SecretsMsg),
     #[allow(dead_code)]
     Review(review::ReviewMsg),
+    Mock(mock::MockMsg),
 }
 
 // ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -404,6 +406,8 @@ pub enum ResponseMsg {
     BodyOpened(Result<crate::services::preview_file::PreviewFile, String>),
     ViewerEdited(iced_code_editor::Message),
     ConsoleEdited(iced::widget::text_editor::Action),
+    /// Select/scroll in one HTML preview block (edits are dropped).
+    HtmlPreviewAction(usize, iced::widget::text_editor::Action),
     /// Step the response viewer one page (see `page_starts` in state/tabs).
     ViewerPagePrev,
     ViewerPageNext,

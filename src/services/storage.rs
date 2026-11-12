@@ -16,6 +16,7 @@ use crate::state::session::AppSession;
 pub mod drafts;
 pub mod examples;
 pub mod meta;
+pub mod mocks;
 pub mod secrets;
 pub mod vault;
 
@@ -74,6 +75,7 @@ pub fn open(data_dir: &PathBuf) -> SqlResult<Connection> {
     )?;
     migrate(&conn);
     examples::migrate(&conn)?;
+    mocks::migrate(&conn)?;
     vault::migrate(&conn)
         .map_err(|e| rusqlite::Error::InvalidParameterName(format!("Encrypted storage: {e}")))?;
     Ok(conn)

@@ -116,7 +116,27 @@ pub(super) fn status_bar(state: &AppState) -> Element<'_, Message> {
         .iter()
         .find(|e| e.is_active)
         .map_or(0, |e| e.variables.len());
+    let live_mocks = state.mocks.live_count();
+    let mocks_el: Element<Message> = if live_mocks == 0 {
+        iced::widget::Space::new().width(0).into()
+    } else {
+        row![
+            icons::dot(crate::ui::components::tone::Tone::Success.color()),
+            text(if live_mocks == 1 {
+                "1 mock running".to_owned()
+            } else {
+                format!("{live_mocks} mocks running")
+            })
+            .size(10)
+            .color(crate::ui::components::tone::Tone::Success.color()),
+            separator(),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center)
+        .into()
+    };
     let right = row![
+        mocks_el,
         drafts_el,
         env_el,
         separator(),

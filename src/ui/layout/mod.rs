@@ -261,6 +261,15 @@ fn main_area(state: &AppState) -> Element<'_, Message> {
     {
         return crate::ui::environment_workspace::view(state, env);
     }
+    if let Some(page) = &state.mocks.page {
+        return column![
+            tab_bar::multi_tab_bar(state),
+            crate::ui::mock_page::view(state, page)
+        ]
+        .height(Length::Fill)
+        .width(Length::Fill)
+        .into();
+    }
     if let Some(docs) = &state.collection_docs {
         return column![
             tab_bar::multi_tab_bar(state),

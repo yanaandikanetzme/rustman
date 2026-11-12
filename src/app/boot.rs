@@ -213,6 +213,13 @@ pub(crate) fn init_at(data_dir: PathBuf) -> (AppState, Task<Message>) {
             }
             examples
         },
+        mocks: crate::state::mocks::MocksState {
+            servers: db
+                .as_ref()
+                .and_then(|db| storage::mocks::load(db).ok())
+                .unwrap_or_default(),
+            ..Default::default()
+        },
         tabs,
         sidebar,
         collections,
@@ -329,6 +336,7 @@ pub(crate) fn init_at(data_dir: PathBuf) -> (AppState, Task<Message>) {
 
     let mut state = state;
     super::snippet::refresh(&mut state);
+    super::mocks::start_on_launch(&mut state);
     (state, boot_task)
 }
 
