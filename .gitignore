@@ -31,6 +31,7 @@ scripts/uploads/
 .commandcode
 .vscode
 .github
+.agent
 
 # Local design mockups
 /agent/plan/mockup/
