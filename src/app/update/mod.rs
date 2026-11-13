@@ -27,8 +27,6 @@ mod sidebar_environments_tests;
 #[cfg(test)]
 mod sidebar_feedback_tests;
 mod sidebar_search;
-#[cfg(feature = "self-update")]
-mod updater;
 #[cfg(test)]
 mod url_variables_tests;
 mod ws;
@@ -482,8 +480,6 @@ fn update_inner(state: &mut AppState, message: Message) -> Task<Message> {
         Message::App(msg) => app_msg::handle(state, msg),
         Message::Settings(msg) => settings::handle(state, msg),
         Message::Layout(msg) => handle_layout(state, msg),
-        #[cfg(feature = "self-update")]
-        Message::Update(msg) => updater::handle(state, msg),
         Message::Draft(msg) => drafts::handle(state, msg),
         Message::Meta(msg) => meta::handle(state, msg),
         Message::Auth(msg) => auth::handle(state, msg),
@@ -498,8 +494,6 @@ fn blocks_example_exit(state: &mut AppState, message: &Message) -> bool {
         message,
         Message::App(crate::message::AppMsg::WindowCloseRequested(_))
     );
-    #[cfg(feature = "self-update")]
-    let exit = exit || matches!(message, Message::Update(crate::message::UpdateMsg::Restart));
     exit && examples::protect(state)
 }
 

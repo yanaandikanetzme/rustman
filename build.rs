@@ -23,7 +23,6 @@ fn main() {
         res.set_icon("public/icon.ico");
         res.set("ProductName", "Rustman");
         res.set("FileDescription", "Rustman — native API testing tool");
-        res.set("CompanyName", "animeshchaudhri");
         res.set("LegalCopyright", "MIT licensed");
         if let Err(err) = res.compile() {
             // A missing resource compiler must not fail the build; the binary is

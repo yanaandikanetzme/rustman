@@ -1022,10 +1022,18 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_example_search_and_restart_protect_dirty_editor() {
+    fn endpoint_example_search_and_close_protect_dirty_editor() {
         let (mut s, dir, id) = setup();
         apply(&mut s, ExampleMsg::Create(id)).unwrap();
         apply(&mut s, ExampleMsg::Name("Unsaved".into())).unwrap();
+        assert!(super::super::blocks_example_exit(
+            &mut s,
+            &Message::App(crate::message::AppMsg::WindowCloseRequested(
+                iced::window::Id::unique()
+            ))
+        ));
+        assert!(s.examples.editor.as_ref().unwrap().confirm_discard);
+        s.examples.editor.as_mut().unwrap().confirm_discard = false;
         let _ = super::super::update(
             &mut s,
             Message::Sidebar(crate::message::SidebarMsg::FilterChanged("Login".into())),
@@ -1037,14 +1045,6 @@ mod tests {
         );
         assert_eq!(s.tabs.tabs.len(), tab_count);
         assert!(s.examples.editor.as_ref().unwrap().confirm_discard);
-        #[cfg(feature = "self-update")]
-        {
-            s.examples.editor.as_mut().unwrap().confirm_discard = false;
-            assert!(super::super::blocks_example_exit(
-                &mut s,
-                &Message::Update(crate::message::UpdateMsg::Restart)
-            ));
-        }
         drop(s);
         let _ = std::fs::remove_dir_all(dir);
     }

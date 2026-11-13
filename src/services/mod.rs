@@ -18,8 +18,6 @@ pub mod secrets;
 pub mod snippet;
 pub mod spreadsheet;
 pub mod storage;
-#[cfg(feature = "self-update")]
-pub mod update;
 pub mod variables;
 pub mod vcs;
 pub mod websocket;

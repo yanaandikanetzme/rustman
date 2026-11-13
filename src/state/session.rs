@@ -40,10 +40,6 @@ pub struct AppSession {
     /// Pin the handshake to TLS 1.3.
     #[serde(default)]
     pub tls_force_tls13: bool,
-    /// Check GitHub releases on launch (issue #57). Off by default: old
-    /// sessions that predate the setting get the new quiet behavior too.
-    #[serde(default)]
-    pub auto_check_updates: bool,
 }
 
 fn default_timeout_ms() -> u64 {
@@ -63,4 +59,26 @@ pub const DEFAULT_SNIPPET_WIDTH: f32 = 272.0;
 
 fn default_snippet_width() -> f32 {
     DEFAULT_SNIPPET_WIDTH
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppSession;
+
+    #[test]
+    fn legacy_update_preference_is_ignored_and_not_persisted() {
+        for enabled in [false, true] {
+            let mut legacy = serde_json::to_value(AppSession::default()).unwrap();
+            legacy["auto_check_updates"] = serde_json::json!(enabled);
+            legacy["sidebar_panel"] = serde_json::json!("Settings");
+            legacy["theme_idx"] = serde_json::json!(2);
+            let restored: AppSession = serde_json::from_value(legacy).unwrap();
+            assert_eq!(restored.sidebar_panel, "Settings");
+            assert_eq!(restored.theme_idx, 2);
+            let saved = serde_json::to_value(&restored).unwrap();
+            assert!(saved.get("auto_check_updates").is_none());
+            assert_eq!(saved["sidebar_panel"], "Settings");
+            assert_eq!(saved["theme_idx"], 2);
+        }
+    }
 }

@@ -26,8 +26,6 @@ pub enum Message {
     App(AppMsg),
     Settings(SettingsMsg),
     Layout(LayoutMsg),
-    #[cfg(feature = "self-update")]
-    Update(UpdateMsg),
     // ── Company edition (C11) ── constructed once each workstream lands.
     #[allow(dead_code)]
     Draft(draft::DraftMsg),
@@ -682,7 +680,6 @@ pub enum AppMsg {
         generation: u64,
         result: HttpResult,
     },
-    OpenUrl(String),
 
     ViewerReady {
         generation: u64,
@@ -734,11 +731,6 @@ pub enum SettingsMsg {
     CloseGlobalScriptsModal,
     /// Toggle one of the TLS/connection workarounds (issue #40).
     TlsOptionToggled(TlsOption),
-    /// Footer tapped: three taps unlock the hidden creator card.
-    CreatorTapped,
-    /// Toggle automatic update checks on launch (issue #57).
-    #[cfg(feature = "self-update")]
-    AutoCheckUpdatesToggled,
 }
 
 /// The individual TLS/connection settings, for `SettingsMsg::TlsOptionToggled`.
@@ -748,26 +740,4 @@ pub enum TlsOption {
     Http1Only,
     ForceTls12,
     ForceTls13,
-}
-
-// ── Auto-update ───────────────────────────────────────────────────────────────
-
-/// Messages for the in-app updater. The enum (and its `Message::Update`
-/// carrier) only exists in builds with the `self-update` feature; in a
-/// package-manager build the whole update flow is compiled out.
-#[cfg(feature = "self-update")]
-#[derive(Debug, Clone)]
-pub enum UpdateMsg {
-    /// Start a background check against GitHub releases.
-    Check,
-    /// Result of a check: `Some` when a newer version exists.
-    Checked(Result<Option<crate::services::update::UpdateInfo>, String>),
-    /// Download + replace the binary.
-    Install,
-    /// Result of an install: the new version on success.
-    Installed(Result<String, String>),
-    /// Hide the update banner.
-    Dismiss,
-    /// Relaunch into the updated binary.
-    Restart,
 }

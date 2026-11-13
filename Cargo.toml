@@ -9,24 +9,6 @@ authors = ["modified"]
 name = "rustman"
 path = "src/main.rs"
 
-[features]
-# The default build ships the in-app updater: Settings → Updates checks GitHub
-# releases, and a newer release can replace the running binary. The launch
-# check itself is opt-in (issue #57).
-#
-# Distro packages build with `--no-default-features`. The package manager owns
-# /usr/bin/rustman and delivers updates, so for those builds the updater, its
-# boot-time check and its archive/swapping dependencies are compiled out
-# entirely — nothing in the binary can overwrite a package-owned file.
-default = ["self-update"]
-self-update = [
-    "dep:self-replace",
-    "dep:flate2",
-    "dep:tar",
-    "dep:zip",
-    "dep:minisign-verify",
-]
-
 [dependencies]
 # GUI
 iced = { version = "0.14", features = ["tokio", "advanced", "image", "svg"] }
@@ -80,21 +62,6 @@ hmac = "0.13"
 # LRU cache for parsed response bodies
 lru = "0.19"
 
-# In-app self-update (feature `self-update`, on by default): reuses the
-# existing (ring-based) reqwest to fetch a release asset, then extracts +
-# atomically swaps the binary. All pure-Rust, no C toolchain. Optional so
-# package-manager builds (`--no-default-features`) drop them.
-self-replace = { version = "1", optional = true }
-flate2 = { version = "1", optional = true }
-tar = { version = "0.4", optional = true }
-zip = { version = "9", default-features = false, features = [
-    "deflate",
-], optional = true }
-# Verifies the minisign signature on a release's SHA256SUMS before the updater
-# swaps the binary. Zero-dependency, pure Rust (no C toolchain), like the rest
-# of the updater. Optional so `--no-default-features` builds drop it.
-minisign-verify = { version = "0.3", optional = true }
-
 # Misc
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -117,10 +84,7 @@ rustls = { version = "0.23.43", default-features = false, features = [
 ] }
 
 [dev-dependencies]
-# The spreadsheet tests hand-build a minimal .xlsx at runtime. In normal
-# builds the `zip` crate arrives through the self-update feature (above), but
-# tests must also compile under `--no-default-features`, so it is listed here
-# non-optionally as well.
+# The spreadsheet tests hand-build a minimal .xlsx at runtime.
 zip = { version = "9", default-features = false, features = ["deflate"] }
 
 # The editor widget is the rust-man-org fork of upstream iced-code-editor

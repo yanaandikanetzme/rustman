@@ -96,8 +96,6 @@ pub(crate) fn init_at(data_dir: PathBuf) -> (AppState, Task<Message>) {
     let mut snippet_open = true;
     let mut snippet_width = crate::state::session::DEFAULT_SNIPPET_WIDTH;
     let mut snippet_lang = crate::services::snippet::Lang::default();
-    #[cfg(feature = "self-update")]
-    let mut auto_check_updates = false;
     let mut tls_options = crate::services::http::TlsOptions::default();
     if let Some(sess) = session {
         theme_idx = sess.theme_idx;
@@ -108,10 +106,6 @@ pub(crate) fn init_at(data_dir: PathBuf) -> (AppState, Task<Message>) {
         snippet_open = sess.snippet_open;
         snippet_width = sess.snippet_width;
         snippet_lang = crate::services::snippet::Lang::from_key(&sess.snippet_lang);
-        #[cfg(feature = "self-update")]
-        {
-            auto_check_updates = sess.auto_check_updates;
-        }
         tls_options = crate::services::http::TlsOptions {
             accept_invalid_certs: sess.tls_accept_invalid_certs,
             http1_only: sess.tls_http1_only,
@@ -241,8 +235,6 @@ pub(crate) fn init_at(data_dir: PathBuf) -> (AppState, Task<Message>) {
         palette_kind: None,
         palette_anim: None,
         palette_now: std::time::Instant::now(),
-        creator_taps: 0,
-        creator_unlocked: false,
         parsed_cache: crate::services::cache::ParsedBodyCache::default(),
         export_dialog_collection: None,
         save_dialog_open: false,
@@ -295,10 +287,6 @@ pub(crate) fn init_at(data_dir: PathBuf) -> (AppState, Task<Message>) {
         snippet: String::new(),
         snippet_lang,
         ui_scale: 1.0,
-        #[cfg(feature = "self-update")]
-        update: crate::app::UpdateState::Idle,
-        #[cfg(feature = "self-update")]
-        auto_check_updates,
         default_timeout_text: default_timeout_ms.to_string(),
         default_timeout_ms,
         global_pre_request_editor: iced::widget::text_editor::Content::with_text(
@@ -315,29 +303,10 @@ pub(crate) fn init_at(data_dir: PathBuf) -> (AppState, Task<Message>) {
         review: Default::default(),
     };
 
-    #[cfg(feature = "self-update")]
-    let update_task = Task::perform(crate::services::update::check(), |res| match res {
-        Ok(opt) => Message::Update(crate::message::UpdateMsg::Checked(Ok(opt))),
-        Err(e) => Message::Update(crate::message::UpdateMsg::Checked(Err(e))),
-    });
-
-    // Opted out (issue #57): zero boot-time network. The manual Check button
-    // in Settings still works — it dispatches its own task on demand. With
-    // the `self-update` feature compiled out there is no check at all: the
-    // package manager delivers updates.
-    #[cfg(feature = "self-update")]
-    let boot_task = if auto_check_updates {
-        update_task
-    } else {
-        Task::none()
-    };
-    #[cfg(not(feature = "self-update"))]
-    let boot_task = Task::none();
-
     let mut state = state;
     super::snippet::refresh(&mut state);
     super::mocks::start_on_launch(&mut state);
-    (state, boot_task)
+    (state, Task::none())
 }
 
 fn parse_sidebar_panel(s: &str) -> crate::message::SidebarPanel {

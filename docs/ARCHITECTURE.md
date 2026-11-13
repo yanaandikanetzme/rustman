@@ -176,7 +176,7 @@ sh scripts/ui.sh              # build + run (debug, your normal data)
 sh scripts/ui.sh -r           # build + run release
 sh scripts/ui.sh -t -r        # run both test configs + check, then build+run
 cargo test                    # default features
-cargo test --no-default-features   # distro build (no self-updater)
+cargo test --no-default-features   # test without default features
 cargo fmt --check && cargo clippy
 ```
 
